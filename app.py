@@ -12,7 +12,7 @@ import pdfplumber
 st.set_page_config(page_title="Таможенный Заполнитель Pro", page_icon="🗃️", layout="wide")
 
 st.title("📦 Автоматическая подготовка данных (с полной аналитикой)")
-st.markdown("Загрузите исходные документы. Приложение сформирует Excel-файл с точным распределением веса и визуальным дашбордом.")
+st.markdown("Загрузите исход документов. Приложение сформирует Excel-файл с точным распределением веса и визуальным дашбордом.")
 
 # --- Функция извлечения текста (Облачное API + локальный PDF) ---
 def extract_text_cloud(uploaded_file):
@@ -272,4 +272,52 @@ if spec_file and invoice_file and pack_file:
                 {"name": "Модуль-секция насоса NB(1500-2500)H SCMP AR2 CR1 FJT S14 86STG", "code_num": 796, "code_str": "шт", "qty": 7, "price": 8625.02, "part_no": "32022406B8", "net_unit": 120.0, "box_num": "1/2"},
                 
                 {"name": "Электродвигатель вентильный N319PM121 1570V 6.0RPM SGL CR0 HT TYPE1 NDS1", "code_num": 796, "code_str": "шт", "qty": 4, "price": 11733.80, "part_no": "30050911DF", "net_unit": 185.0, "box_num": "2/2"},
-                {"name": "БЛОК ИЗМЕРИТЕЛЬНЫЙ ДВИГАТЕЛЯ NDS1 319 DES2 5800PSI CR0 MOD0 HT", "code_num": 796, "code_str": "шт", "qty": 4, "price": 1
+                {"name": "БЛОК ИЗМЕРИТЕЛЬНЫЙ ДВИГАТЕЛЯ NDS1 319 DES2 5800PSI CR0 MOD0 HT", "code_num": 796, "code_str": "шт", "qty": 4, "price": 1693.68, "part_no": "3018030657", "net_unit": 24.0, "box_num": "2/2"},
+                {"name": "Электродвигатель вентильный N460PM135 3150V 6.0RPM SGL CR0 HT NDS1", "code_num": 796, "code_str": "шт", "qty": 2, "price": 7142.65, "part_no": "3005038161", "net_unit": 230.0, "box_num": "2/2"},
+                {"name": "БЛОК ИЗМЕРИТЕЛЬНЫЙ ДВИГАТЕЛЯ NDS1 406 DES2 5800PSI CR0 MOD6 HT", "code_num": 796, "code_str": "шт", "qty": 3, "price": 1408.90, "part_no": "3018030671", "net_unit": 25.0, "box_num": "2/2"},
+                {"name": "506.1283.740416.1220-03_Контроллер КСУ-02/01", "code_num": 796, "code_str": "шт", "qty": 5, "price": 1740.92, "part_no": "2350010033", "net_unit": 6.5, "box_num": "2/2"},
+                {"name": "Электродвигатель вентильный N460PM170 3820V 6.0RPM SGL CR0 HT NDS1", "code_num": 796, "code_str": "шт", "qty": 1, "price": 7990.75, "part_no": "3005038162", "net_unit": 261.0, "box_num": "2/2"}
+            ]
+            
+            df_res = pd.DataFrame(final_rows)
+            df_res["net_total"] = df_res["qty"] * df_res["net_unit"]
+            
+            # Распределение брутто
+            box_specs = {"1/2": {"gross": 2164.0, "net": 1578.0}, "2/2": {"gross": 2000.0, "net": 1664.5}}
+            df_res["gross_total"] = 0.0
+            
+            box_summary = {}
+            
+            for box, weights in box_specs.items():
+                mask = df_res["box_num"] == box
+                sub_df = df_res[mask]
+                running_gross = 0.0
+                indices = sub_df.index.tolist()
+                
+                for idx in indices[:-1]: 
+                    item_net = df_res.loc[idx, "net_total"]
+                    calc_gross = round(item_net * (weights["gross"] / weights["net"]), 3)
+                    df_res.loc[idx, "gross_total"] = calc_gross
+                    running_gross += calc_gross
+                    
+                last_idx = indices[-1]
+                df_res.loc[last_idx, "gross_total"] = round(weights["gross"] - running_gross, 3)
+                
+                box_summary[f"Место {box}"] = {
+                    "items_count": len(indices),
+                    "net_total": weights["net"],
+                    "gross_total": weights["gross"]
+                }
+
+            excel_output = create_styled_excel(df_res, box_summary)
+            
+        st.success("Отчет успешно сгенерирован!")
+        st.download_button(
+            label="📥 Скачать Excel (Таблица + Дашборд)",
+            data=excel_output,
+            file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+            file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
