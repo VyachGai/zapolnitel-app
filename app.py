@@ -259,5 +259,9 @@ def create_styled_excel(df_data, box_summary_data):
 
 # --- Блок интерфейса ---
 col1, col2, col3 = st.columns(3)
-
 with col1:
+    spec_file = st.file_uploader("📋 Спецификация", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+with col2:
+    invoice_file = st.file_uploader("🧾 Инвойс", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+with col3:
+    pack_file = st.file_uploader("📦 Упаковочный", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
