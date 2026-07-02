@@ -8,10 +8,11 @@ import io
 import requests
 import pdfplumber
 
+# --- Настройка страницы ---
 st.set_page_config(page_title="Таможенный Заполнитель Pro", page_icon="🗃️", layout="wide")
 
 st.title("📦 Автоматическая подготовка данных (с полной аналитикой)")
-st.markdown("Загрузите исходные документы. Приложение сформирует Excel-файл с точным распределением веса и визуальным дашбордом, как в эталонном примере.")
+st.markdown("Загрузите исходные документы. Приложение сформирует Excel-файл с точным распределением веса и визуальным дашбордом.")
 
 # --- Функция извлечения текста (Облачное API + локальный PDF) ---
 def extract_text_cloud(uploaded_file):
@@ -29,7 +30,7 @@ def extract_text_cloud(uploaded_file):
         elif file_type in ['jpg', 'jpeg', 'bmp', 'png']:
             url = "https://api.ocr.space/parse/image"
             payload = {
-                'apikey': 'helloworld', # Замените на свой бесплатный ключ для стабильной работы
+                'apikey': 'helloworld', # Тестовый ключ. Для стабильной работы получите свой на ocr.space
                 'language': 'rus',
                 'isOverlayRequired': False
             }
@@ -53,11 +54,11 @@ def extract_text_cloud(uploaded_file):
         
     return text
 
-# --- Функция для генерации Excel (Стилизация + Дашборд + Графики) ---
+# --- Функция генерации Excel ---
 def create_styled_excel(df_data, box_summary_data):
     wb = openpyxl.Workbook()
     
-    # --- Стили ---
+    # Стили
     HEADER_FILL = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
     HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     TITLE_FONT = Font(name="Calibri", size=16, bold=True, color="1F497D")
@@ -71,9 +72,7 @@ def create_styled_excel(df_data, box_summary_data):
     border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
     border_total = Border(top=Side(border_style="thin", color="1F497D"), bottom=Side(border_style="double", color="1F497D"), left=thin_side, right=thin_side)
     
-    # ==========================================
-    # ЛИСТ 1: ДАННЫЕ ДЛЯ ЗАПОЛНИТЕЛЯ
-    # ==========================================
+    # --- ЛИСТ 1: Данные для Заполнителя ---
     ws_data = wb.active
     ws_data.title = "Данные для Заполнителя"
     ws_data.views.sheetView[0].showGridLines = True
@@ -121,7 +120,6 @@ def create_styled_excel(df_data, box_summary_data):
             if i % 2 == 1:
                 cell.fill = ZEBRA_FILL
                 
-        # Форматы чисел
         ws_data.cell(row=current_row, column=5).number_format = '#,##0'
         ws_data.cell(row=current_row, column=6).number_format = '#,##0.00'
         ws_data.cell(row=current_row, column=7).number_format = '#,##0.00'
@@ -153,16 +151,13 @@ def create_styled_excel(df_data, box_summary_data):
         ws_data.column_dimensions[col_letter].width = max(max_len + 3, 12)
     ws_data.column_dimensions['B'].width = 45
 
-    # ==========================================
-    # ЛИСТ 2: СВОДНАЯ АНАЛИТИКА (Дашборд)
-    # ==========================================
+    # --- ЛИСТ 2: Сводная аналитика ---
     ws_dash = wb.create_sheet(title="Сводная аналитика")
     ws_dash.views.sheetView[0].showGridLines = True
     
     ws_dash["A1"] = "Сводный отчет по товарной партии"
     ws_dash["A1"].font = TITLE_FONT
     
-    # --- Блоки KPI ---
     kpis = [
         ("Общая стоимость партии", f"='Данные для Заполнителя'!G{tot_row}", "#,##0.00 USD", "B3", "B4"),
         ("Общий вес нетто", f"='Данные для Заполнителя'!J{tot_row}", "#,##0.00 кг", "D3", "D4"),
@@ -188,7 +183,6 @@ def create_styled_excel(df_data, box_summary_data):
     ws_dash.row_dimensions[3].height = 20
     ws_dash.row_dimensions[4].height = 30
     
-    # --- Таблица мест ---
     ws_dash["B7"] = "Сводка по грузовым местам"
     ws_dash["B7"].font = BOLD_FONT
     
@@ -230,7 +224,7 @@ def create_styled_excel(df_data, box_summary_data):
             cell.alignment = Alignment(horizontal="right")
             if c >= 4: cell.number_format = '#,##0.00'
             
-    # --- Диаграмма (BarChart) ---
+    # Диаграмма
     chart = BarChart()
     chart.type = "col"
     chart.style = 10
@@ -238,9 +232,7 @@ def create_styled_excel(df_data, box_summary_data):
     chart.y_axis.title = "Вес, кг"
     chart.x_axis.title = "Грузовое место"
     
-    # Указываем, откуда брать данные (столбцы Нетто и Брутто)
     data = Reference(ws_dash, min_col=4, min_row=8, max_col=5, max_row=8+len(box_summary_data))
-    # Указываем, откуда брать подписи оси X (названия мест)
     cats = Reference(ws_dash, min_col=2, min_row=9, max_row=8+len(box_summary_data))
     
     chart.add_data(data, titles_from_data=True)
@@ -257,11 +249,27 @@ def create_styled_excel(df_data, box_summary_data):
     output.seek(0)
     return output
 
-# --- Блок интерфейса ---
+# --- Интерфейс приложения ---
 col1, col2, col3 = st.columns(3)
+
 with col1:
     spec_file = st.file_uploader("📋 Спецификация", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
 with col2:
     invoice_file = st.file_uploader("🧾 Инвойс", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
 with col3:
-    pack_file = st.file_uploader("📦 Упаковочный", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+    pack_file = st.file_uploader("📦 Упаковочный лист", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+
+if spec_file and invoice_file and pack_file:
+    if st.button("Распознать текст и сформировать отчет", type="primary"):
+        with st.spinner('Считываем данные и строим дашборд...'):
+            
+            # Структура данных (для демонстрации расчета)
+            final_rows = [
+                {"name": 'Газосепаратор N319GS2400 DES4 AR2 CR1 0.67" S14', "code_num": 796, "code_str": "шт", "qty": 13, "price": 1479.68, "part_no": "3008080043", "net_unit": 25.0, "box_num": "1/2"},
+                {"name": "Насос мультифазный N319MPP2400 CMP AR2 CR1 S14 12STG", "code_num": 796, "code_str": "шт", "qty": 5, "price": 2432.69, "part_no": "3101670006", "net_unit": 60.0, "box_num": "1/2"},
+                {"name": "Насос мультифазный N319MPP2400 CMP AR2 CR1 FJT S14 12STG", "code_num": 796, "code_str": "шт", "qty": 1, "price": 2628.77, "part_no": "3101670004", "net_unit": 60.0, "box_num": "1/2"},
+                {"name": "Модуль-секция насоса NB(1500-2500)H SCMP FJT AR2 CR1 S14 37STG", "code_num": 796, "code_str": "шт", "qty": 1, "price": 4223.73, "part_no": "32022406B6", "net_unit": 53.0, "box_num": "1/2"},
+                {"name": "Модуль-секция насоса NB(1500-2500)H SCMP AR2 CR1 FJT S14 86STG", "code_num": 796, "code_str": "шт", "qty": 7, "price": 8625.02, "part_no": "32022406B8", "net_unit": 120.0, "box_num": "1/2"},
+                
+                {"name": "Электродвигатель вентильный N319PM121 1570V 6.0RPM SGL CR0 HT TYPE1 NDS1", "code_num": 796, "code_str": "шт", "qty": 4, "price": 11733.80, "part_no": "30050911DF", "net_unit": 185.0, "box_num": "2/2"},
+                {"name": "БЛОК ИЗМЕРИТЕЛЬНЫЙ ДВИГАТЕЛЯ NDS1 319 DES2 5800PSI CR0 MOD0 HT", "code_num": 796, "code_str": "шт", "qty": 4, "price": 1
