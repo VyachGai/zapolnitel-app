@@ -318,6 +318,3 @@ if spec_file and invoice_file and pack_file:
             file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-            file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
