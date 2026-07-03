@@ -1,76 +1,68 @@
 import streamlit as st
 import pandas as pd
+import re
 
-st.set_page_config(page_title="Таможенный Сборщик", layout="wide")
-st.title("📦 Сборщик данных (Максимально надежный)")
+st.set_page_config(page_title="Customs Parser", layout="wide")
+st.title("📦 Таможенный Сборщик (Hardened Version)")
 
-def clean_file(file, sheet, engine):
-    file.seek(0)
-    # Читаем файл без заголовков
-    df = pd.read_excel(file, sheet_name=sheet, header=None, engine=engine)
-    
-    # 1. Поиск строки с заголовками
-    keywords = ['код', 'part', 'артикул', 'наимен', 'name', 'qty', 'кол']
-    header_idx = None
+# 1. Функция поиска ключевых слов в строках для отсева мусора
+def is_trash(row):
+    text = " ".join(row.astype(str).str.lower())
+    trash_patterns = ['consignee', 'shipper', 'address', 'грузо', 'покупатель', 'продав', 'итого', 'total', 'contract', 'контракт', 'signature']
+    return any(p in text for p in trash_patterns)
+
+# 2. Функция поиска заголовков (самая важная часть)
+def find_header_row(df):
+    keywords = ['код', 'part', 'артикул', 'name', 'наимен', 'qty', 'кол-во']
     for idx, row in df.iterrows():
         row_str = " ".join(row.astype(str).str.lower())
-        if any(kw in row_str for kw in keywords):
-            header_idx = idx
-            break
-            
-    if header_idx is None:
-        st.error(f"Не удалось найти строку с заголовками (искали: {keywords})")
-        return None
+        # Если в строке 2 и более ключевых слова — это 99% заголовок таблицы
+        if sum(1 for kw in keywords if kw in row_str) >= 2:
+            return idx
+    return None
 
-    # 2. Безопасная нарезка таблицы
-    # Проверяем, есть ли вообще данные после строки с заголовком
-    if len(df) <= header_idx + 1:
-        st.warning("Заголовок найден, но под ним нет данных.")
-        return None
-
-    df_clean = df.iloc[header_idx + 1:].copy()
-    df_clean.columns = df.iloc[header_idx].astype(str).str.strip().str.lower()
-    df_clean = df_clean.reset_index(drop=True)
+def process_file(file):
+    # Читаем файл как сырые данные
+    df = pd.read_excel(file, header=None)
     
-    # 3. Фильтрация мусора
-    # Удаляем строки, где пустой первый столбец
-    df_clean = df_clean[df_clean.iloc[:, 0].notna()]
+    # Ищем начало таблицы
+    h_idx = find_header_row(df)
+    if h_idx is None:
+        return None, "Заголовок не найден"
     
-    # Удаляем явно мусорные строки (по ключевым словам)
-    trash = ['consignee', 'shipper', 'contract', 'addr', 'упак', 'лист', 'итого', 'total']
-    # Проверяем только первый столбец, чтобы не удалить случайно данные
-    df_clean = df_clean[~df_clean.iloc[:, 0].astype(str).str.lower().str.contains('|'.join(trash), na=False)]
-        
-    return df_clean
+    # Отрезаем всё сверху
+    df = df.iloc[h_idx:].reset_index(drop=True)
+    df.columns = df.iloc[0].astype(str).str.lower()
+    df = df.iloc[1:]
+    
+    # Удаляем строки, где артикул пустой (NaN)
+    # Ищем колонку с кодом/артикулом
+    part_col = next((c for c in df.columns if any(k in str(c) for k in ['код', 'part', 'art'])), df.columns[0])
+    df = df[df[part_col].notna()]
+    
+    return df, "OK"
 
 # --- ИНТЕРФЕЙС ---
-uploaded_files = st.file_uploader("Загрузите файлы Excel", accept_multiple_files=True, type=['xlsx', 'xls'])
+uploaded_files = st.file_uploader("Загрузите файлы", accept_multiple_files=True, type=['xlsx', 'xls'])
 dfs = []
 
 if uploaded_files:
     for up in uploaded_files:
         try:
-            engine = 'openpyxl' if up.name.endswith('.xlsx') else 'xlrd'
-            xl = pd.ExcelFile(up, engine=engine)
-            sheet = st.selectbox(f"Лист для {up.name}:", xl.sheet_names, key=up.name)
-            
-            clean_df = clean_file(up, sheet, engine)
-            if clean_df is not None:
-                dfs.append(clean_df)
-                st.write(f"✅ Файл {up.name} обработан, найдено строк: {len(clean_df)}")
+            res_df, msg = process_file(up)
+            if res_df is not None:
+                dfs.append(res_df)
+                st.write(f"✅ {up.name}: обработано ({len(res_df)} строк)")
+            else:
+                st.error(f"❌ {up.name}: {msg}")
         except Exception as e:
-            st.error(f"Ошибка чтения {up.name}: {e}")
+            st.error(f"❌ {up.name}: Ошибка - {e}")
 
 if dfs and st.button("Собрать таблицу"):
     try:
-        # Объединяем все найденные данные
         final_df = pd.concat(dfs, axis=0, ignore_index=True)
-        final_df = final_df.drop_duplicates()
-        
-        st.success(f"Готово! Собрано строк: {len(final_df)}")
         st.dataframe(final_df)
-        
         csv = final_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Скачать CSV", csv, "final_data.csv", "text/csv")
+        st.download_button("Скачать", csv, "result.csv", "text/csv")
     except Exception as e:
-        st.error(f"Ошибка при сборке: {e}")
+        st.error(f"Ошибка сборки: {e}")
