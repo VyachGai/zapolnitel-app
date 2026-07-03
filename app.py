@@ -1,70 +1,52 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
-from openpyxl.chart import BarChart, Reference
 import io
 
-# --- Настройка ---
+# Настройка страницы
 st.set_page_config(page_title="Таможенный Заполнитель", layout="wide")
-st.title("📦 Автоматизация таможенных деклараций")
+st.title("📦 Автоматическая обработка документов")
 
-# --- Улучшенный загрузчик с выбором движка ---
-def get_excel_sheets(uploaded_file):
-    uploaded_file.seek(0)
-    # Пытаемся открыть через openpyxl, если падает — через xlrd
-    try:
-        xl = pd.ExcelFile(uploaded_file, engine='openpyxl')
-        return xl.sheet_names
-    except:
+# Функция безопасного получения списка листов
+def get_sheets_safely(file):
+    file.seek(0)
+    # Пытаемся открыть через оба движка по очереди
+    for engine in ['openpyxl', 'xlrd']:
         try:
-            uploaded_file.seek(0)
-            xl = pd.ExcelFile(uploaded_file, engine='xlrd')
-            return xl.sheet_names
-        except Exception as e:
-            st.error(f"Файл {uploaded_file.name} поврежден или имеет неверный формат: {e}")
-            return []
+            xl = pd.ExcelFile(file, engine=engine)
+            return xl.sheet_names, engine
+        except:
+            continue
+    return None, None
 
-def parse_selected_sheet(uploaded_file, sheet_name=None):
-    uploaded_file.seek(0)
-    try:
-        # Пробуем openpyxl первым (для .xlsx)
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None, engine='openpyxl')
-    except:
-        uploaded_file.seek(0)
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None, engine='xlrd')
-    
-    # Поиск строки с заголовками
-    header_row = 0
-    for idx, row in df.iterrows():
-        row_str = " ".join(row.astype(str)).lower()
-        if any(kw in row_str for kw in ['код', 'part', 'наименование', 'qty']):
-            header_row = idx
-            break
-    
-    df_clean = df.iloc[header_row:].copy()
-    df_clean.columns = df_clean.iloc[0]
-    return df_clean.iloc[1:].reset_index(drop=True)
+# Функция чтения данных
+def read_data(file, sheet_name, engine):
+    file.seek(0)
+    return pd.read_excel(file, sheet_name=sheet_name, engine=engine, header=None)
 
-# --- Интерфейс ---
+# --- ИНТЕРФЕЙС ---
 col1, col2, col3 = st.columns(3)
+files_data = {}
 
-with col1:
-    spec_file = st.file_uploader("Спецификация", type=["xlsx", "xls"])
-with col2:
-    invoice_file = st.file_uploader("Инвойс", type=["xlsx", "xls"])
-with col3:
-    pack_file = st.file_uploader("Упаковочный лист", type=["xlsx", "xls"])
+for name, col in [("Спецификация", col1), ("Инвойс", col2), ("Упаковочный", col3)]:
+    with col:
+        uploaded = st.file_uploader(f"Загрузить {name}", type=["xlsx", "xls"])
+        if uploaded:
+            sheets, engine = get_sheets_safely(uploaded)
+            if sheets:
+                selected_sheet = st.selectbox(f"Лист для {name}:", sheets, key=f"sel_{name}")
+                # Читаем данные и сохраняем в словарь
+                df = read_data(uploaded, selected_sheet, engine)
+                files_data[name] = df
+            else:
+                st.error(f"Не удалось прочитать файл {name}. Возможно, он поврежден или это не Excel.")
 
-if spec_file and invoice_file and pack_file:
-    if st.button("Обработать файлы"):
-        # Здесь идет ваша логика парсинга (упрощенно для примера)
-        try:
-            df_p = parse_selected_sheet(pack_file)
-            st.write("Данные успешно считаны!")
-            st.dataframe(df_p.head())
-            # Далее ваша логика расчета...
-        except Exception as e:
-            st.error(f"Ошибка обработки: {e}")
-            st.info("Убедитесь, что файлы не открыты в Excel в момент загрузки.")
+# Кнопка обработки
+if len(files_data) == 3:
+    if st.button("Сформировать данные"):
+        st.success("Все файлы считаны успешно!")
+        # Здесь ваша логика обработки, например:
+        # df_spec = files_data["Спецификация"]
+        # ...
+else:
+    st.info("Пожалуйста, загрузите все 3 файла и выберите листы.")
