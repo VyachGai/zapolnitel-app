@@ -32,8 +32,9 @@ def parse_tabular_file(uploaded_file):
     # Ищем строку, где начинается таблица (заголовок)
     header_row_idx = 0
     for idx, row in df.iterrows():
-        row_str = " ".join(row.astype(str).lower())
-        if any(kw in row_str for kw in ['код изделия', 'part number', 'наименование', 'goods name', '№ места', 'package no']):
+        # ИСПРАВЛЕНИЕ ОШИБКИ: Сначала склеиваем ячейки в строку, затем приводим к нижнему регистру
+        row_str = " ".join(row.astype(str)).lower()
+        if any(kw in row_str for kw in ['код изделия', 'part number', 'part no', 'наименование', 'goods name', '№ места', 'package no']):
             header_row_idx = idx
             break
             
@@ -252,23 +253,30 @@ if spec_file and invoice_file and pack_file:
     if st.button("Распознать текст и сформировать отчет", type="primary"):
         with st.spinner('Анализируем загруженные файлы и рассчитываем веса...'):
             try:
-                # Проверяем форматы. Полноценный динамический разбор делаем для табличных форматов.
-                if not (pack_file.name.endswith(('.xlsx', '.xls', '.csv'))):
-                    st.warning("⚠️ Для полной автоматизации расчетов загружайте файлы в форматах Excel (.xlsx) или CSV.")
-                    st.stop()
-
                 # 1. Читаем и очищаем Упаковочный лист
                 df_p = parse_tabular_file(pack_file)
                 
-                c_box = find_col(df_p.columns, ['мест', 'package'])
-                c_part = find_col(df_p.columns, ['код изделия', 'part no', 'артикул'])
+                # Ищем колонки, устойчивые к разному регистру и пробелам
+                c_box = find_col(df_p.columns, ['мест', 'package', 'box'])
+                c_part = find_col(df_p.columns, ['код изделия', 'part number', 'part no', 'артикул'])
                 c_name = find_col(df_p.columns, ['наименование', 'goods name', 'description'])
                 c_qty = find_col(df_p.columns, ['кол', 'qty', 'quantity'])
-                c_net = find_col(df_p.columns, ['нетто', 'net weight'])
-                c_gross = find_col(df_p.columns, ['брутто', 'gross weight'])
+                c_net = find_col(df_p.columns, ['нетто', 'net weight', 'net'])
+                c_gross = find_col(df_p.columns, ['брутто', 'gross weight', 'gross'])
                 
-                if not c_box or not c_part or not c_qty:
-                    st.error("Не удалось найти обязательные столбцы (Номер места, Артикул или Количество) в Упаковочном листе. Проверьте структуру файла.")
+                # ИСПРАВЛЕНИЕ: Блокировка сбоя (NoneType) с четким описанием отсутствующей колонки
+                required_cols = {
+                    "Номер места": c_box, 
+                    "Артикул": c_part, 
+                    "Наименование": c_name, 
+                    "Количество": c_qty, 
+                    "Вес нетто": c_net, 
+                    "Вес брутто": c_gross
+                }
+                
+                missing_cols = [name for name, val in required_cols.items() if val is None]
+                if missing_cols:
+                    st.error(f"⚠️ Не удалось найти следующие столбцы в Упаковочном листе: **{', '.join(missing_cols)}**. Убедитесь, что слова присутствуют в шапке таблицы.")
                     st.stop()
                     
                 # Заполняем пустые ячейки мест (объединенные ячейки в Excel)
@@ -279,7 +287,7 @@ if spec_file and invoice_file and pack_file:
                 df_p[c_net] = pd.to_numeric(df_p[c_net], errors='coerce')
                 df_p[c_gross] = pd.to_numeric(df_p[c_gross], errors='coerce')
                 
-                # Удаляем мусорные строки
+                # Удаляем мусорные строки, где нет артикула или количества
                 df_p = df_p.dropna(subset=[c_part, c_qty])
                 
                 # Запоминаем общий брутто-вес для каждой коробки (он указан в первой строчке места)
@@ -317,7 +325,6 @@ if spec_file and invoice_file and pack_file:
                         row = box_df.loc[idx]
                         item_net = float(row[c_net])
                         
-                        # Расчет пропорционального брутто
                         calc_gross = round(item_net * (box_gross / box_net_total), 3) if box_net_total > 0 else 0.0
                         running_gross += calc_gross
                         
@@ -358,7 +365,7 @@ if spec_file and invoice_file and pack_file:
                             "gross_total": calc_gross
                         })
                         
-                    # Заполняем данные для сводного дашборда
+                    # Данные для сводного дашборда
                     box_summary[f"Место {box}"] = {
                         "items_count": len(indices),
                         "net_total": box_net_total,
@@ -368,20 +375,20 @@ if spec_file and invoice_file and pack_file:
                 df_final_result = pd.DataFrame(final_rows)
                 
                 if df_final_result.empty:
-                    st.error("Не удалось сопоставить данные из файлов. Убедитесь, что артикулы в упаковочном листе и инвойсе совпадают.")
+                    st.error("⚠️ Не удалось сопоставить данные из файлов. Убедитесь, что артикулы в упаковочном листе и спецификации совпадают.")
                     st.stop()
 
-                # Строим итоговый стилизованный файл
+                # 4. Строим итоговый стилизованный файл
                 excel_output = create_styled_excel(df_final_result, box_summary)
                 
-                st.success("🎉 Обработка завершена! Новый файл успешно сформирован на основе ваших данных.")
+                st.success("🎉 Обработка завершена! Новый файл успешно сформирован на основе загруженных данных.")
                 st.download_button(
                     label="📥 Скачать Excel (Таблица + Дашборд)",
                     data=excel_output,
-                    file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
+                    file_name="Tamozhnya_Zapolnitel_Pro_Auto.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
             except Exception as e:
-                st.error(f"Ошибка при обработке файлов: {e}")
-                st.info("Проверьте, что файлы не повреждены и содержат стандартные таблицы.")
+                st.error(f"Произошла непредвиденная ошибка при обработке данных: {e}")
+                st.info("Пожалуйста, убедитесь, что файлы имеют стандартный вид таблиц, а не являются сканами (формат .pdf или .jpg).")
