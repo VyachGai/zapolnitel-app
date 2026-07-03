@@ -5,8 +5,6 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference
 import io
-import requests
-import pdfplumber
 
 # --- Настройка страницы ---
 st.set_page_config(page_title="Таможенный Заполнитель Pro", page_icon="🗃️", layout="wide")
@@ -14,7 +12,7 @@ st.set_page_config(page_title="Таможенный Заполнитель Pro",
 st.title("📦 Автоматическая подготовка данных (с полной аналитикой)")
 st.markdown("Загрузите исходные документы. Приложение автоматически считает данные, объединит позиции и пропорционально распределит вес брутто.")
 
-# --- Умная функция поиска столбцов по ключевым словам ---
+# --- Безопасный поиск колонок ---
 def find_col(columns, keywords):
     for col in columns:
         col_clean = str(col).lower().strip()
@@ -22,29 +20,41 @@ def find_col(columns, keywords):
             return col
     return None
 
-# --- Функция парсинга документов со смещенной шапкой ---
+# --- Парсинг таблиц со смещенной шапкой ---
 def parse_tabular_file(uploaded_file):
+    # Возвращаем курсор в начало файла на всякий случай
+    uploaded_file.seek(0)
     if uploaded_file.name.endswith('.csv'):
-        df = pd.read_csv(uploaded_file, header=None)
+        # Пытаемся прочесть CSV, автоматически определяя разделитель
+        try:
+            df = pd.read_csv(uploaded_file, header=None, sep=None, engine='python')
+        except:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, header=None)
     else:
+        # Для .xls требуется xlrd, для .xlsx - openpyxl (работает автоматически)
         df = pd.read_excel(uploaded_file, header=None)
         
-    # Ищем строку, где начинается таблица (заголовок)
     header_row_idx = 0
     for idx, row in df.iterrows():
-        # ИСПРАВЛЕНИЕ ОШИБКИ: Сначала склеиваем ячейки в строку, затем приводим к нижнему регистру
+        # Склеиваем все ячейки строки в текст для поиска ключевых слов шапки
         row_str = " ".join(row.astype(str)).lower()
         if any(kw in row_str for kw in ['код изделия', 'part number', 'part no', 'наименование', 'goods name', '№ места', 'package no']):
             header_row_idx = idx
             break
             
-    # Пересобираем DataFrame с правильным заголовком
     df_clean = df.iloc[header_row_idx:].copy()
     df_clean.columns = df_clean.iloc[0]
     df_clean = df_clean.iloc[1:].reset_index(drop=True)
     return df_clean
 
-# --- Функция генерации Excel ---
+# --- Безопасное приведение к числу (защита от запятых вместо точек) ---
+def to_numeric_safe(series):
+    # Преобразуем "15,5" в "15.5" и убираем случайные пробелы
+    s = series.astype(str).str.replace(',', '.').str.replace(' ', '')
+    return pd.to_numeric(s, errors='coerce')
+
+# --- Генерация Excel ---
 def create_styled_excel(df_data, box_summary_data):
     wb = openpyxl.Workbook()
     
@@ -57,12 +67,12 @@ def create_styled_excel(df_data, box_summary_data):
     REGULAR_FONT = Font(name="Calibri", size=11)
     ZEBRA_FILL = PatternFill(start_color="F2F5F9", end_color="F2F5F9", fill_type="solid")
     TOTAL_FILL = PatternFill(start_color="E9EDF4", end_color="E9EDF4", fill_type="solid")
+    border_all = Border(left=Side(border_style="thin", color="D9D9D9"), right=Side(border_style="thin", color="D9D9D9"), 
+                        top=Side(border_style="thin", color="D9D9D9"), bottom=Side(border_style="thin", color="D9D9D9"))
+    border_total = Border(top=Side(border_style="thin", color="1F497D"), bottom=Side(border_style="double", color="1F497D"), 
+                          left=Side(border_style="thin", color="D9D9D9"), right=Side(border_style="thin", color="D9D9D9"))
     
-    thin_side = Side(border_style="thin", color="D9D9D9")
-    border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    border_total = Border(top=Side(border_style="thin", color="1F497D"), bottom=Side(border_style="double", color="1F497D"), left=thin_side, right=thin_side)
-    
-    # --- ЛИСТ 1: Данные для Заполнителя ---
+    # === ЛИСТ 1 ===
     ws_data = wb.active
     ws_data.title = "Данные для Заполнителя"
     ws_data.views.sheetView[0].showGridLines = True
@@ -91,7 +101,7 @@ def create_styled_excel(df_data, box_summary_data):
         current_row = start_row + i
         
         ws_data.cell(row=current_row, column=1, value=i+1).alignment = Alignment(horizontal="center")
-        ws_data.cell(row=current_row, column=2, value=row["name"]).alignment = Alignment(horizontal="left")
+        ws_data.cell(row=current_row, column=2, value=str(row["name"])).alignment = Alignment(horizontal="left")
         ws_data.cell(row=current_row, column=3, value=row["code_num"]).alignment = Alignment(horizontal="center")
         ws_data.cell(row=current_row, column=4, value=row["code_str"]).alignment = Alignment(horizontal="center")
         ws_data.cell(row=current_row, column=5, value=row["qty"]).alignment = Alignment(horizontal="right")
@@ -101,7 +111,7 @@ def create_styled_excel(df_data, box_summary_data):
         ws_data.cell(row=current_row, column=9, value=row["net_unit"]).alignment = Alignment(horizontal="right")
         ws_data.cell(row=current_row, column=10, value=f"=E{current_row}*I{current_row}").alignment = Alignment(horizontal="right")
         ws_data.cell(row=current_row, column=11, value=row["gross_total"]).alignment = Alignment(horizontal="right")
-        ws_data.cell(row=current_row, column=12, value=row["box_num"]).alignment = Alignment(horizontal="center")
+        ws_data.cell(row=current_row, column=12, value=str(row["box_num"])).alignment = Alignment(horizontal="center")
         
         for col_idx in range(1, 13):
             cell = ws_data.cell(row=current_row, column=col_idx)
@@ -137,11 +147,10 @@ def create_styled_excel(df_data, box_summary_data):
             
     for col in ws_data.columns:
         max_len = max(len(str(cell.value or '')) for cell in col if cell.row > 2)
-        col_letter = get_column_letter(col[0].column)
-        ws_data.column_dimensions[col_letter].width = max(max_len + 3, 12)
+        ws_data.column_dimensions[get_column_letter(col[0].column)].width = max(max_len + 3, 12)
     ws_data.column_dimensions['B'].width = 45
 
-    # --- ЛИСТ 2: Сводная аналитика ---
+    # === ЛИСТ 2 (Дашборд) ===
     ws_dash = wb.create_sheet(title="Сводная аналитика")
     ws_dash.views.sheetView[0].showGridLines = True
     
@@ -154,18 +163,15 @@ def create_styled_excel(df_data, box_summary_data):
         ("Общий вес брутто", f"='Данные для Заполнителя'!K{tot_row}", "#,##0.00 кг", "F3", "F4")
     ]
     
-    kpi_label_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-    kpi_val_fill = PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
-    
     for label, formula, num_fmt, l_cell, v_cell in kpis:
         ws_dash[l_cell] = label
         ws_dash[l_cell].font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-        ws_dash[l_cell].fill = kpi_label_fill
+        ws_dash[l_cell].fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
         ws_dash[l_cell].alignment = Alignment(horizontal="center", vertical="center")
         
         ws_dash[v_cell] = formula
         ws_dash[v_cell].font = Font(name="Calibri", size=14, bold=True, color="1F497D")
-        ws_dash[v_cell].fill = kpi_val_fill
+        ws_dash[v_cell].fill = PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid")
         ws_dash[v_cell].alignment = Alignment(horizontal="center", vertical="center")
         ws_dash[v_cell].number_format = num_fmt
         ws_dash[v_cell].border = border_all
@@ -214,22 +220,23 @@ def create_styled_excel(df_data, box_summary_data):
             cell.alignment = Alignment(horizontal="right")
             if c >= 4: cell.number_format = '#,##0.00'
             
-    # Диаграмма
-    chart = BarChart()
-    chart.type = "col"
-    chart.style = 10
-    chart.title = "Распределение веса по грузовым местам (кг)"
-    chart.y_axis.title = "Вес, кг"
-    chart.x_axis.title = "Грузовое место"
-    
-    data = Reference(ws_dash, min_col=4, min_row=8, max_col=5, max_row=8+len(box_summary_data))
-    cats = Reference(ws_dash, min_col=2, min_row=9, max_row=8+len(box_summary_data))
-    
-    chart.add_data(data, titles_from_data=True)
-    chart.set_categories(cats)
-    ws_dash.add_chart(chart, "B14")
-    chart.width = 16
-    chart.height = 10
+    # Защита: Диаграмма строится только если есть данные
+    if len(box_summary_data) > 0:
+        chart = BarChart()
+        chart.type = "col"
+        chart.style = 10
+        chart.title = "Распределение веса по грузовым местам (кг)"
+        chart.y_axis.title = "Вес, кг"
+        chart.x_axis.title = "Грузовое место"
+        
+        data = Reference(ws_dash, min_col=4, min_row=8, max_col=5, max_row=8+len(box_summary_data))
+        cats = Reference(ws_dash, min_col=2, min_row=9, max_row=8+len(box_summary_data))
+        
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        ws_dash.add_chart(chart, "B14")
+        chart.width = 16
+        chart.height = 10
             
     for col in ws_dash.columns:
         ws_dash.column_dimensions[get_column_letter(col[0].column)].width = 18
@@ -243,20 +250,19 @@ def create_styled_excel(df_data, box_summary_data):
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    spec_file = st.file_uploader("📋 Спецификация", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+    spec_file = st.file_uploader("📋 Спецификация", type=["xlsx", "xls", "csv"])
 with col2:
-    invoice_file = st.file_uploader("🧾 Инвойс", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+    invoice_file = st.file_uploader("🧾 Инвойс", type=["xlsx", "xls", "csv"])
 with col3:
-    pack_file = st.file_uploader("📦 Упаковочный лист", type=["xlsx", "csv", "pdf", "jpg", "bmp"])
+    pack_file = st.file_uploader("📦 Упаковочный лист", type=["xlsx", "xls", "csv"])
 
 if spec_file and invoice_file and pack_file:
-    if st.button("Распознать текст и сформировать отчет", type="primary"):
-        with st.spinner('Анализируем загруженные файлы и рассчитываем веса...'):
+    if st.button("Сформировать отчет", type="primary"):
+        with st.spinner('Анализируем данные...'):
             try:
                 # 1. Читаем и очищаем Упаковочный лист
                 df_p = parse_tabular_file(pack_file)
                 
-                # Ищем колонки, устойчивые к разному регистру и пробелам
                 c_box = find_col(df_p.columns, ['мест', 'package', 'box'])
                 c_part = find_col(df_p.columns, ['код изделия', 'part number', 'part no', 'артикул'])
                 c_name = find_col(df_p.columns, ['наименование', 'goods name', 'description'])
@@ -264,131 +270,115 @@ if spec_file and invoice_file and pack_file:
                 c_net = find_col(df_p.columns, ['нетто', 'net weight', 'net'])
                 c_gross = find_col(df_p.columns, ['брутто', 'gross weight', 'gross'])
                 
-                # ИСПРАВЛЕНИЕ: Блокировка сбоя (NoneType) с четким описанием отсутствующей колонки
                 required_cols = {
-                    "Номер места": c_box, 
-                    "Артикул": c_part, 
-                    "Наименование": c_name, 
-                    "Количество": c_qty, 
-                    "Вес нетто": c_net, 
-                    "Вес брутто": c_gross
+                    "Номер места": c_box, "Артикул": c_part, "Наименование": c_name, 
+                    "Количество": c_qty, "Вес нетто": c_net, "Вес брутто": c_gross
                 }
                 
                 missing_cols = [name for name, val in required_cols.items() if val is None]
                 if missing_cols:
-                    st.error(f"⚠️ Не удалось найти следующие столбцы в Упаковочном листе: **{', '.join(missing_cols)}**. Убедитесь, что слова присутствуют в шапке таблицы.")
+                    st.error(f"⚠️ Не найдена колонка: **{', '.join(missing_cols)}** в Упаковочном. Проверьте шапку таблицы.")
                     st.stop()
                     
-                # Заполняем пустые ячейки мест (объединенные ячейки в Excel)
                 df_p[c_box] = df_p[c_box].ffill()
+                df_p[c_qty] = to_numeric_safe(df_p[c_qty])
+                df_p[c_net] = to_numeric_safe(df_p[c_net])
+                df_p[c_gross] = to_numeric_safe(df_p[c_gross])
                 
-                # Приводим типы к числовым
-                df_p[c_qty] = pd.to_numeric(df_p[c_qty], errors='coerce')
-                df_p[c_net] = pd.to_numeric(df_p[c_net], errors='coerce')
-                df_p[c_gross] = pd.to_numeric(df_p[c_gross], errors='coerce')
-                
-                # Удаляем мусорные строки, где нет артикула или количества
                 df_p = df_p.dropna(subset=[c_part, c_qty])
                 
-                # Запоминаем общий брутто-вес для каждой коробки (он указан в первой строчке места)
                 box_gross_weights = df_p.groupby(c_box)[c_gross].max().to_dict()
-                
-                # Группируем упаковочный лист, чтобы сложить повторяющиеся товары ВНУТРИ одного места
                 df_p_grouped = df_p.groupby([c_box, c_part, c_name], as_index=False).agg({c_qty: 'sum', c_net: 'sum'})
 
-                # 2. Собираем цены из Спецификации или Инвойса
+                # 2. Собираем цены из Спецификации и Инвойса
                 price_dict = {}
                 for doc in [spec_file, invoice_file]:
-                    if doc.name.endswith(('.xlsx', '.xls', '.csv')):
+                    try:
                         df_doc = parse_tabular_file(doc)
                         c_doc_part = find_col(df_doc.columns, ['код', 'part', 'артикул'])
                         c_doc_price = find_col(df_doc.columns, ['цена', 'price', 'тариф'])
+                        
                         if c_doc_part and c_doc_price:
-                            df_doc[c_doc_price] = pd.to_numeric(df_doc[c_doc_price], errors='coerce')
+                            df_doc[c_doc_price] = to_numeric_safe(df_doc[c_doc_price])
                             extracted_prices = df_doc.dropna(subset=[c_doc_part, c_doc_price]).set_index(c_doc_part)[c_doc_price].to_dict()
                             price_dict.update(extracted_prices)
+                    except Exception as loop_e:
+                        continue # Пропускаем файл, если он не читается, чтобы не ломать весь процесс
 
-                # 3. Основной цикл сборки данных и распределения весов брутто
+                # 3. Основной цикл
                 final_rows = []
                 box_summary = {}
                 unique_boxes = df_p_grouped[c_box].unique()
                 
                 for box in unique_boxes:
                     box_df = df_p_grouped[df_p_grouped[c_box] == box]
-                    box_gross = float(box_gross_weights.get(box, 0.0))
-                    box_net_total = float(box_df[c_net].sum())
+                    box_gross = float(box_gross_weights.get(box, 0.0) or 0.0)
+                    box_net_total = float(box_df[c_net].sum() or 0.0)
                     
                     indices = box_df.index.tolist()
                     running_gross = 0.0
                     
                     for idx in indices[:-1]:
                         row = box_df.loc[idx]
-                        item_net = float(row[c_net])
+                        item_net = float(row[c_net]) if pd.notnull(row[c_net]) else 0.0
                         
                         calc_gross = round(item_net * (box_gross / box_net_total), 3) if box_net_total > 0 else 0.0
                         running_gross += calc_gross
                         
                         part_val = str(row[c_part]).strip()
-                        qty_val = int(row[c_qty])
+                        qty_val = int(row[c_qty]) if pd.notnull(row[c_qty]) else 0
+                        price_val = float(price_dict.get(part_val, 0.0))
                         
                         final_rows.append({
-                            "name": str(row[c_name]),
-                            "code_num": "796",
-                            "code_str": "шт",
-                            "qty": qty_val,
-                            "price": float(price_dict.get(part_val, 0.0)),
-                            "part_no": part_val,
+                            "name": str(row[c_name]), "code_num": "796", "code_str": "шт",
+                            "qty": qty_val, "price": price_val, "part_no": part_val,
                             "net_unit": round(item_net / qty_val, 3) if qty_val > 0 else 0.0,
-                            "box_num": str(box),
-                            "gross_total": calc_gross
+                            "box_num": str(box), "gross_total": calc_gross
                         })
                         
-                    # Последний элемент в коробке забирает хвостовой остаток
                     if indices:
                         last_idx = indices[-1]
                         row = box_df.loc[last_idx]
-                        item_net = float(row[c_net])
+                        item_net = float(row[c_net]) if pd.notnull(row[c_net]) else 0.0
                         calc_gross = round(box_gross - running_gross, 3)
                         
                         part_val = str(row[c_part]).strip()
-                        qty_val = int(row[c_qty])
+                        qty_val = int(row[c_qty]) if pd.notnull(row[c_qty]) else 0
+                        price_val = float(price_dict.get(part_val, 0.0))
                         
                         final_rows.append({
-                            "name": str(row[c_name]),
-                            "code_num": "796",
-                            "code_str": "шт",
-                            "qty": qty_val,
-                            "price": float(price_dict.get(part_val, 0.0)),
-                            "part_no": part_val,
+                            "name": str(row[c_name]), "code_num": "796", "code_str": "шт",
+                            "qty": qty_val, "price": price_val, "part_no": part_val,
                             "net_unit": round(item_net / qty_val, 3) if qty_val > 0 else 0.0,
-                            "box_num": str(box),
-                            "gross_total": calc_gross
+                            "box_num": str(box), "gross_total": calc_gross
                         })
                         
-                    # Данные для сводного дашборда
                     box_summary[f"Место {box}"] = {
-                        "items_count": len(indices),
-                        "net_total": box_net_total,
-                        "gross_total": box_gross
+                        "items_count": len(indices), "net_total": box_net_total, "gross_total": box_gross
                     }
 
                 df_final_result = pd.DataFrame(final_rows)
                 
                 if df_final_result.empty:
-                    st.error("⚠️ Не удалось сопоставить данные из файлов. Убедитесь, что артикулы в упаковочном листе и спецификации совпадают.")
+                    st.error("⚠️ Не удалось сопоставить данные. Проверьте совпадение артикулов.")
                     st.stop()
 
-                # 4. Строим итоговый стилизованный файл
+                # 4. Формируем файл
                 excel_output = create_styled_excel(df_final_result, box_summary)
                 
-                st.success("🎉 Обработка завершена! Новый файл успешно сформирован на основе загруженных данных.")
+                st.success("🎉 Успех! Файл сформирован.")
                 st.download_button(
-                    label="📥 Скачать Excel (Таблица + Дашборд)",
+                    label="📥 Скачать готовый Excel",
                     data=excel_output,
-                    file_name="Tamozhnya_Zapolnitel_Pro_Auto.xlsx",
+                    file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
+            except ImportError as e:
+                # Отлавливаем частую ошибку старого Excel
+                if 'xlrd' in str(e).lower():
+                    st.error("🚨 Ошибка: Для чтения старых файлов (.xls) необходимо добавить библиотеку `xlrd` в файл requirements.txt.")
+                else:
+                    st.error(f"Ошибка библиотеки: {e}")
             except Exception as e:
-                st.error(f"Произошла непредвиденная ошибка при обработке данных: {e}")
-                st.info("Пожалуйста, убедитесь, что файлы имеют стандартный вид таблиц, а не являются сканами (формат .pdf или .jpg).")
+                st.error(f"Системная ошибка обработки таблиц: Убедитесь, что таблицы не пустые и имеют корректную шапку. Детали: {e}")
