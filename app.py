@@ -1,19 +1,15 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.chart import BarChart, Reference
 import io
 
-st.set_page_config(page_title="Таможенный Заполнитель", layout="wide")
+st.set_page_config(page_title="Таможенный Заполнитель Pro", layout="wide")
+st.title("📦 Автоматическая обработка документов")
 
-# Функция поиска нужной колонки по списку ключевых слов
-def find_col(columns, keywords):
-    for col in columns:
-        col_str = str(col).lower()
-        for kw in keywords:
-            if kw in col_str:
-                return col
-    return None
-
+# --- Вспомогательные функции ---
 def get_sheets(file):
     file.seek(0)
     try:
@@ -21,48 +17,77 @@ def get_sheets(file):
         return xl.sheet_names, 'openpyxl'
     except:
         file.seek(0)
-        xl = pd.ExcelFile(file, engine='xlrd')
-        return xl.sheet_names, 'xlrd'
+        try:
+            xl = pd.ExcelFile(file, engine='xlrd')
+            return xl.sheet_names, 'xlrd'
+        except:
+            return None, None
+
+def read_data(file, sheet, engine):
+    file.seek(0)
+    # Читаем без заголовков, чтобы найти их вручную
+    df = pd.read_excel(file, sheet_name=sheet, header=None, engine=engine)
+    
+    # Ищем строку с заголовками
+    header_idx = 0
+    for idx, row in df.iterrows():
+        row_str = " ".join(row.astype(str)).lower()
+        if any(kw in row_str for kw in ['код', 'part', 'наименование', 'name', 'qty', 'кол']):
+            header_idx = idx
+            break
+    
+    df_clean = df.iloc[header_idx:].copy()
+    df_clean.columns = df_clean.iloc[0].astype(str).str.strip().str.lower()
+    return df_clean.iloc[1:].reset_index(drop=True)
 
 # --- ИНТЕРФЕЙС ---
-st.title("📦 Формирование таблицы данных")
 col1, col2, col3 = st.columns(3)
+files = {}
 
-files_dfs = {}
 for name, col in [("Спецификация", col1), ("Инвойс", col2), ("Упаковочный", col3)]:
     with col:
         up = st.file_uploader(f"Загрузить {name}", type=["xlsx", "xls"], key=name)
         if up:
             sheets, engine = get_sheets(up)
-            s_sheet = st.selectbox(f"Лист для {name}:", sheets, key=f"sel_{name}")
-            up.seek(0)
-            files_dfs[name] = pd.read_excel(up, sheet_name=s_sheet, engine=engine)
+            if sheets:
+                s_sheet = st.selectbox(f"Лист для {name}:", sheets, key=f"sel_{name}")
+                files[name] = read_data(up, s_sheet, engine)
 
-if len(files_dfs) == 3:
+if len(files) == 3:
     if st.button("Сформировать таблицу"):
         try:
-            df_p = files_dfs["Упаковочный"]
+            df_p = files["Упаковочный"]
             
-            # --- УМНЫЙ ПОИСК ЗАГОЛОВКОВ ---
-            # Ищем колонки с похожими именами
-            col_part = find_col(df_p.columns, ['part', 'код', 'артикул'])
-            col_qty = find_col(df_p.columns, ['qty', 'кол', 'количество'])
-            col_name = find_col(df_p.columns, ['name', 'наименов', 'description'])
+            # Авто-поиск колонок по ключевым словам в нижнем регистре
+            def get_col(df, kws):
+                for col in df.columns:
+                    if any(k in col for k in kws): return col
+                return None
+
+            c_part = get_col(df_p, ['код', 'part'])
+            c_name = get_col(df_p, ['наимен', 'name', 'descr'])
+            c_qty = get_col(df_p, ['кол', 'qty'])
+            c_net = get_col(df_p, ['нетто', 'net'])
+            c_gross = get_col(df_p, ['брутто', 'gross'])
+            c_box = get_col(df_p, ['мест', 'box', 'package'])
+
+            # Создаем унифицированный DataFrame
+            df_res = pd.DataFrame({
+                'part_no': df_p[c_part].astype(str).str.replace('.0', ''),
+                'name': df_p[c_name],
+                'qty': pd.to_numeric(df_p[c_qty], errors='coerce'),
+                'net': pd.to_numeric(df_p[c_net], errors='coerce'),
+                'gross': pd.to_numeric(df_p[c_gross], errors='coerce'),
+                'box': df_p[c_box].ffill()
+            })
             
-            st.write("Найденные колонки:", {"Артикул": col_part, "Кол-во": col_qty, "Имя": col_name})
+            st.success("Данные успешно нормализованы!")
+            st.dataframe(df_res)
             
-            if None in [col_part, col_qty, col_name]:
-                st.error("Не удалось найти все колонки. Убедитесь, что таблица начинается сразу под заголовками.")
-            else:
-                # Формируем новую таблицу
-                result = df_p[[col_part, col_name, col_qty]].copy()
-                result.columns = ['part_no', 'name', 'qty']
-                st.dataframe(result)
-                
-                # Кнопка скачивания
-                csv = result.to_csv(index=False).encode('utf-8')
-                st.download_button("Скачать CSV", csv, "result.csv", "text/csv")
-                
+            # Выгрузка
+            csv = df_res.to_csv(index=False).encode('utf-8')
+            st.download_button("Скачать CSV", csv, "final_data.csv", "text/csv")
+            
         except Exception as e:
-            st.error(f"Ошибка обработки: {e}")
-            st.write("Отладочная информация: имена колонок в вашем файле:", list(files_dfs["Упаковочный"].columns))
+            st.error(f"Ошибка логики: {e}")
+            st.write("Колонки, которые я вижу в Упаковочном листе:", list(df_p.columns))
