@@ -3,60 +3,62 @@ import pandas as pd
 import io
 
 st.set_page_config(page_title="Таможенный Сборщик Pro", layout="wide")
-st.title("📦 Сборка данных по нескольким ключам")
+st.title("📦 Сборщик данных в структурированную таблицу")
 
-# Функция поиска колонок
-def get_col(df, kws):
+# Словарь для маппинга заголовков в нужные нам колонки
+COLUMN_MAPPING = {
+    'part_no': ['код', 'part', 'артикул', 'po number'],
+    'name': ['наимен', 'name', 'description', 'описание'],
+    'model': ['модель', 'model'],
+    'qty': ['кол', 'qty', 'quantity'],
+    'price': ['цена', 'price'],
+    'weight': ['вес', 'weight', 'нетто', 'net']
+}
+
+def find_best_col(df, keywords):
     for col in df.columns:
-        if any(k in str(col).lower() for k in kws): return col
+        col_str = str(col).lower()
+        if any(kw in col_str for kw in keywords):
+            return col
     return None
 
-# Функция нормализации для создания ключа
-def create_key(row, col_art, col_name, col_model):
-    parts = []
-    if col_art and pd.notnull(row.get(col_art)): parts.append(str(row[col_art]).strip())
-    if col_name and pd.notnull(row.get(col_name)): parts.append(str(row[col_name]).strip().lower())
-    if col_model and pd.notnull(row.get(col_model)): parts.append(str(row[col_model]).strip().lower())
-    return "_".join(parts) if parts else None
+def process_file(file):
+    # Авто-определение типа файла
+    if file.name.endswith('.csv'): df = pd.read_csv(file)
+    else: df = pd.read_excel(file, header=0) # Или используйте вашу логику поиска заголовков
+    
+    # Создаем временный DF с нормализованными колонками
+    new_df = pd.DataFrame()
+    for target_col, keywords in COLUMN_MAPPING.items():
+        found = find_best_col(df, keywords)
+        if found:
+            new_df[target_col] = df[found]
+    
+    # Удаляем строки, где совсем нет данных
+    return new_df.dropna(how='all')
 
 # --- ИНТЕРФЕЙС ---
 col1, col2, col3 = st.columns(3)
-files = {}
+file_inputs = [("Спецификация", col1), ("Инвойс", col2), ("Упаковочный", col3)]
+uploaded_dfs = []
 
-for name, col in [("Спецификация", col1), ("Инвойс", col2), ("Упаковочный", col3)]:
+for name, col in file_inputs:
     with col:
         up = st.file_uploader(f"Загрузить {name}", type=["xlsx", "xls", "csv"], key=name)
         if up:
-            # Читаем данные (с учетом авто-определения заголовков)
-            if up.name.endswith('.csv'): df = pd.read_csv(up)
-            else:
-                xl = pd.ExcelFile(up)
-                s_sheet = st.selectbox(f"Лист для {name}:", xl.sheet_names, key=f"s_{name}")
-                df = pd.read_excel(up, sheet_name=s_sheet)
-            files[name] = df
+            uploaded_dfs.append(process_file(up))
 
-if files:
-    if st.button("Объединить все данные"):
-        dfs_to_merge = []
+if uploaded_dfs:
+    if st.button("Сформировать итоговую таблицу"):
+        # Объединяем все файлы в один список строк
+        final_df = pd.concat(uploaded_dfs, axis=0, ignore_index=True)
         
-        for name, df in files.items():
-            # Находим ключи
-            c_art = get_col(df, ['код', 'part', 'артикул'])
-            c_name = get_col(df, ['наимен', 'name', 'description'])
-            c_mod = get_col(df, ['модель', 'model'])
-            
-            # Создаем уникальный ключ для сборки
-            df['merge_key'] = df.apply(lambda row: create_key(row, c_art, c_name, c_mod), axis=1)
-            # Убираем дубликаты ключей внутри файла
-            df = df.drop_duplicates(subset=['merge_key'])
-            dfs_to_merge.append(df.set_index('merge_key'))
-            
-        # Объединяем все файлы в один по ключу
-        merged_df = pd.concat(dfs_to_merge, axis=1).reset_index()
+        # Удаляем полные дубликаты строк (если данные дублируются в разных файлах)
+        final_df = final_df.drop_duplicates()
         
-        st.success("Таблица собрана!")
-        st.dataframe(merged_df)
+        st.success("Таблица успешно собрана!")
+        st.dataframe(final_df)
         
         # Скачивание
-        csv = merged_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Скачать результат", csv, "merged_final.csv", "text/csv")
+        csv = final_df.to_csv(index=False).encode('utf-8')
+        st.download_button("Скачать сводную таблицу", csv, "final_report.csv", "text/csv")
