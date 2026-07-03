@@ -1,80 +1,77 @@
 import streamlit as st
 import pandas as pd
-import io
 
-st.set_page_config(page_title="Таможенный Сборщик Pro", layout="wide")
-st.title("📦 Сборка таможенных данных")
+st.set_page_config(page_title="Таможенный Сборщик", layout="wide")
+st.title("📦 Сборщик данных (Исправленная версия)")
 
-# 1. Словарь для поиска колонок (все варианты названий)
-COLS_MAP = {
-    'part_no': ['код', 'part', 'артикул', 'po number', 'код изделия'],
-    'name': ['наимен', 'name', 'description', 'описание', 'наименование'],
-    'qty': ['кол', 'qty', 'quantity', 'количество'],
-    'price': ['цена', 'price', 'стоимость'],
-    'weight': ['вес', 'weight', 'нетто', 'net', 'gross']
-}
+# Список слов, которые гарантированно являются "мусором"
+TRASH_KEYWORDS = [
+    'consignee', 'shipper', 'address', 'грузо', 'покупатель', 
+    'продавец', 'счет-фактура', 'итого', 'total', 'contract', 'контракт'
+]
 
-def clean_df(df):
-    """Приводит данные к чистому виду: очищает заголовки и удаляет мусорные строки"""
-    # Сначала пытаемся найти строку с заголовками, где больше всего ключевых слов
-    flat_cols = df.astype(str).apply(lambda x: ' '.join(x).lower(), axis=1)
-    keywords = ['код', 'part', 'qty', 'кол', 'name', 'наимен']
-    header_idx = flat_cols.str.contains('|'.join(keywords)).idxmax()
+def clean_and_normalize(df):
+    """Находит начало таблицы и очищает от мусора"""
+    # 1. Поиск строки заголовка: ищем строку, где есть 'код' или 'part'
+    header_row_idx = None
+    for idx, row in df.iterrows():
+        row_str = " ".join(row.astype(str).str.lower())
+        if any(kw in row_str for kw in ['код', 'part', 'артикул', 'po number']):
+            header_row_idx = idx
+            break
     
-    df_clean = df.iloc[header_idx:].copy()
-    df_clean.columns = df_clean.iloc[0].astype(str).str.strip().str.lower()
-    df_clean = df_clean.iloc[1:].reset_index(drop=True)
+    if header_row_idx is None:
+        return None # Таблица не найдена
+
+    # Читаем таблицу с нужной строки
+    df = df.iloc[header_row_idx:].reset_index(drop=True)
+    df.columns = df.iloc[0].astype(str).str.strip().str.lower()
+    df = df.iloc[1:].reset_index(drop=True)
     
-    # Очистка мусора (строки, где в первом столбце какой-то текст, а не артикул)
-    # Удаляем строки, где нет артикула
-    part_col = next((c for c in df_clean.columns if any(k in c for k in COLS_MAP['part_no'])), None)
-    if part_col:
-        df_clean = df_clean[df_clean[part_col].notna()]
-        df_clean = df_clean[~df_clean[part_col].astype(str).str.lower().str.contains('consignee|shipper|addr|упак|list|контракт')]
+    # 2. Очистка строк: удаляем, где нет артикула или где есть мусорные слова
+    # Предполагаем, что артикул в первой колонке с ключевым словом
+    part_col = next((c for c in df.columns if any(k in c for k in ['код', 'part'])), df.columns[0])
+    
+    # Убираем пустые
+    df = df[df[part_col].notna()]
+    # Убираем строки с мусором
+    for kw in TRASH_KEYWORDS:
+        df = df[~df[part_col].astype(str).str.lower().str.contains(kw, na=False)]
         
-    return df_clean
-
-def normalize_df(df):
-    """Преобразует таблицу в стандартный вид"""
-    res = pd.DataFrame()
-    for std_name, vars in COLS_MAP.items():
-        found = next((c for c in df.columns if any(v in c for v in vars)), None)
-        if found:
-            res[std_name] = df[found]
-    return res
+    return df
 
 # --- ИНТЕРФЕЙС ---
-files = {}
-cols = st.columns(3)
-for i, name in enumerate(["Спецификация", "Инвойс", "Упаковочный"]):
-    with cols[i]:
-        up = st.file_uploader(f"Загрузить {name}", type=["xlsx", "xls"], key=name)
-        if up:
-            try:
-                engine = 'openpyxl' if up.name.endswith('.xlsx') else 'xlrd'
-                xl = pd.ExcelFile(up, engine=engine)
-                s = st.selectbox(f"Лист для {name}:", xl.sheet_names, key=f"sel_{name}")
-                raw_df = pd.read_excel(up, sheet_name=s, header=None, engine=engine)
-                files[name] = normalize_df(clean_df(raw_df))
-            except Exception as e:
-                st.error(f"Ошибка загрузки {name}: {e}")
+uploaded_files = st.file_uploader("Загрузите файлы Excel", accept_multiple_files=True, type=['xlsx', 'xls'])
+dfs = []
 
-if files:
-    if st.button("Собрать таблицу по артикулам"):
+if uploaded_files:
+    for up in uploaded_files:
         try:
-            # Магия объединения: берем все файлы и соединяем их по 'part_no'
-            master_df = None
-            for name, df in files.items():
-                if master_df is None:
-                    master_df = df
-                else:
-                    # Используем how='outer', чтобы сохранить все артикулы, даже если они есть только в 1 файле
-                    master_df = pd.merge(master_df, df, on='part_no', how='outer', suffixes=('', f'_{name}'))
+            xl = pd.ExcelFile(up)
+            sheet = st.selectbox(f"Лист для {up.name}:", xl.sheet_names)
+            raw = pd.read_excel(up, sheet_name=sheet, header=None)
             
-            st.success("Таблица собрана!")
-            st.dataframe(master_df)
-            
-            csv = master_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Скачать итоговый CSV", csv, "merged_report.csv", "text/csv")
+            clean_df = clean_and_normalize(raw)
+            if clean_df is not None:
+                dfs.append(clean_df)
+                st.write(f"✅ Файл {up.name} загружен, строк: {len(clean_df)}")
+            else:
+                st.error(f"❌ Не удалось найти таблицу в файле {up.name}")
         except Exception as e:
-            st.error(f"Ошибка объединения: {e}")
+            st.error(f"Ошибка в файле {up.name}: {e}")
+
+if dfs and st.button("Собрать таблицу"):
+    try:
+        # Объединяем все файлы по артикулу (part_no)
+        # Приводим названия колонок к общему виду перед объединением
+        final_df = dfs[0]
+        for i in range(1, len(dfs)):
+            final_df = pd.merge(final_df, dfs[i], on=list(final_df.columns[0:1]), how='outer')
+        
+        st.success("Таблица собрана!")
+        st.dataframe(final_df)
+        
+        csv = final_df.to_csv(index=False).encode('utf-8')
+        st.download_button("Скачать чистый CSV", csv, "final_data.csv", "text/csv")
+    except Exception as e:
+        st.error(f"Ошибка сборки: {e}")
