@@ -12,47 +12,36 @@ import pdfplumber
 st.set_page_config(page_title="Таможенный Заполнитель Pro", page_icon="🗃️", layout="wide")
 
 st.title("📦 Автоматическая подготовка данных (с полной аналитикой)")
-st.markdown("Загрузите исход документов. Приложение сформирует Excel-файл с точным распределением веса и визуальным дашбордом.")
+st.markdown("Загрузите исходные документы. Приложение автоматически считает данные, объединит позиции и пропорционально распределит вес брутто.")
 
-# --- Функция извлечения текста (Облачное API + локальный PDF) ---
-def extract_text_cloud(uploaded_file):
-    text = ""
-    file_type = uploaded_file.name.split('.')[-1].lower()
-    
-    try:
-        if file_type == 'pdf':
-            with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-                        
-        elif file_type in ['jpg', 'jpeg', 'bmp', 'png']:
-            url = "https://api.ocr.space/parse/image"
-            payload = {
-                'apikey': 'helloworld', # Тестовый ключ. Для стабильной работы получите свой на ocr.space
-                'language': 'rus',
-                'isOverlayRequired': False
-            }
-            files = {uploaded_file.name: uploaded_file.getvalue()}
-            response = requests.post(url, files=files, data=payload)
-            result = response.json()
-            
-            if not result.get('IsErroredOnProcessing'):
-                for item in result.get('ParsedResults', []):
-                    text += item.get('ParsedText', '') + "\n"
-            else:
-                text = f"Ошибка сервера OCR: {result.get('ErrorMessage')}"
-                
-        elif file_type in ['xls', 'xlsx', 'csv']:
-            text = f"[{uploaded_file.name}]: Таблица. Данные готовы к парсингу."
-        else:
-            text = "Формат не поддерживается."
-            
-    except Exception as e:
-        text = f"Ошибка при чтении файла: {e}"
+# --- Умная функция поиска столбцов по ключевым словам ---
+def find_col(columns, keywords):
+    for col in columns:
+        col_clean = str(col).lower().strip()
+        if any(kw in col_clean for kw in keywords):
+            return col
+    return None
+
+# --- Функция парсинга документов со смещенной шапкой ---
+def parse_tabular_file(uploaded_file):
+    if uploaded_file.name.endswith('.csv'):
+        df = pd.read_csv(uploaded_file, header=None)
+    else:
+        df = pd.read_excel(uploaded_file, header=None)
         
-    return text
+    # Ищем строку, где начинается таблица (заголовок)
+    header_row_idx = 0
+    for idx, row in df.iterrows():
+        row_str = " ".join(row.astype(str).lower())
+        if any(kw in row_str for kw in ['код изделия', 'part number', 'наименование', 'goods name', '№ места', 'package no']):
+            header_row_idx = idx
+            break
+            
+    # Пересобираем DataFrame с правильным заголовком
+    df_clean = df.iloc[header_row_idx:].copy()
+    df_clean.columns = df_clean.iloc[0]
+    df_clean = df_clean.iloc[1:].reset_index(drop=True)
+    return df_clean
 
 # --- Функция генерации Excel ---
 def create_styled_excel(df_data, box_summary_data):
@@ -261,60 +250,138 @@ with col3:
 
 if spec_file and invoice_file and pack_file:
     if st.button("Распознать текст и сформировать отчет", type="primary"):
-        with st.spinner('Считываем данные и строим дашборд...'):
-            
-            # Структура данных (для демонстрации расчета)
-            final_rows = [
-                {"name": 'Газосепаратор N319GS2400 DES4 AR2 CR1 0.67" S14', "code_num": 796, "code_str": "шт", "qty": 13, "price": 1479.68, "part_no": "3008080043", "net_unit": 25.0, "box_num": "1/2"},
-                {"name": "Насос мультифазный N319MPP2400 CMP AR2 CR1 S14 12STG", "code_num": 796, "code_str": "шт", "qty": 5, "price": 2432.69, "part_no": "3101670006", "net_unit": 60.0, "box_num": "1/2"},
-                {"name": "Насос мультифазный N319MPP2400 CMP AR2 CR1 FJT S14 12STG", "code_num": 796, "code_str": "шт", "qty": 1, "price": 2628.77, "part_no": "3101670004", "net_unit": 60.0, "box_num": "1/2"},
-                {"name": "Модуль-секция насоса NB(1500-2500)H SCMP FJT AR2 CR1 S14 37STG", "code_num": 796, "code_str": "шт", "qty": 1, "price": 4223.73, "part_no": "32022406B6", "net_unit": 53.0, "box_num": "1/2"},
-                {"name": "Модуль-секция насоса NB(1500-2500)H SCMP AR2 CR1 FJT S14 86STG", "code_num": 796, "code_str": "шт", "qty": 7, "price": 8625.02, "part_no": "32022406B8", "net_unit": 120.0, "box_num": "1/2"},
-                
-                {"name": "Электродвигатель вентильный N319PM121 1570V 6.0RPM SGL CR0 HT TYPE1 NDS1", "code_num": 796, "code_str": "шт", "qty": 4, "price": 11733.80, "part_no": "30050911DF", "net_unit": 185.0, "box_num": "2/2"},
-                {"name": "БЛОК ИЗМЕРИТЕЛЬНЫЙ ДВИГАТЕЛЯ NDS1 319 DES2 5800PSI CR0 MOD0 HT", "code_num": 796, "code_str": "шт", "qty": 4, "price": 1693.68, "part_no": "3018030657", "net_unit": 24.0, "box_num": "2/2"},
-                {"name": "Электродвигатель вентильный N460PM135 3150V 6.0RPM SGL CR0 HT NDS1", "code_num": 796, "code_str": "шт", "qty": 2, "price": 7142.65, "part_no": "3005038161", "net_unit": 230.0, "box_num": "2/2"},
-                {"name": "БЛОК ИЗМЕРИТЕЛЬНЫЙ ДВИГАТЕЛЯ NDS1 406 DES2 5800PSI CR0 MOD6 HT", "code_num": 796, "code_str": "шт", "qty": 3, "price": 1408.90, "part_no": "3018030671", "net_unit": 25.0, "box_num": "2/2"},
-                {"name": "506.1283.740416.1220-03_Контроллер КСУ-02/01", "code_num": 796, "code_str": "шт", "qty": 5, "price": 1740.92, "part_no": "2350010033", "net_unit": 6.5, "box_num": "2/2"},
-                {"name": "Электродвигатель вентильный N460PM170 3820V 6.0RPM SGL CR0 HT NDS1", "code_num": 796, "code_str": "шт", "qty": 1, "price": 7990.75, "part_no": "3005038162", "net_unit": 261.0, "box_num": "2/2"}
-            ]
-            
-            df_res = pd.DataFrame(final_rows)
-            df_res["net_total"] = df_res["qty"] * df_res["net_unit"]
-            
-            # Распределение брутто
-            box_specs = {"1/2": {"gross": 2164.0, "net": 1578.0}, "2/2": {"gross": 2000.0, "net": 1664.5}}
-            df_res["gross_total"] = 0.0
-            
-            box_summary = {}
-            
-            for box, weights in box_specs.items():
-                mask = df_res["box_num"] == box
-                sub_df = df_res[mask]
-                running_gross = 0.0
-                indices = sub_df.index.tolist()
-                
-                for idx in indices[:-1]: 
-                    item_net = df_res.loc[idx, "net_total"]
-                    calc_gross = round(item_net * (weights["gross"] / weights["net"]), 3)
-                    df_res.loc[idx, "gross_total"] = calc_gross
-                    running_gross += calc_gross
-                    
-                last_idx = indices[-1]
-                df_res.loc[last_idx, "gross_total"] = round(weights["gross"] - running_gross, 3)
-                
-                box_summary[f"Место {box}"] = {
-                    "items_count": len(indices),
-                    "net_total": weights["net"],
-                    "gross_total": weights["gross"]
-                }
+        with st.spinner('Анализируем загруженные файлы и рассчитываем веса...'):
+            try:
+                # Проверяем форматы. Полноценный динамический разбор делаем для табличных форматов.
+                if not (pack_file.name.endswith(('.xlsx', '.xls', '.csv'))):
+                    st.warning("⚠️ Для полной автоматизации расчетов загружайте файлы в форматах Excel (.xlsx) или CSV.")
+                    st.stop()
 
-            excel_output = create_styled_excel(df_res, box_summary)
-            
-        st.success("Отчет успешно сгенерирован!")
-        st.download_button(
-            label="📥 Скачать Excel (Таблица + Дашборд)",
-            data=excel_output,
-            file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+                # 1. Читаем и очищаем Упаковочный лист
+                df_p = parse_tabular_file(pack_file)
+                
+                c_box = find_col(df_p.columns, ['мест', 'package'])
+                c_part = find_col(df_p.columns, ['код изделия', 'part no', 'артикул'])
+                c_name = find_col(df_p.columns, ['наименование', 'goods name', 'description'])
+                c_qty = find_col(df_p.columns, ['кол', 'qty', 'quantity'])
+                c_net = find_col(df_p.columns, ['нетто', 'net weight'])
+                c_gross = find_col(df_p.columns, ['брутто', 'gross weight'])
+                
+                if not c_box or not c_part or not c_qty:
+                    st.error("Не удалось найти обязательные столбцы (Номер места, Артикул или Количество) в Упаковочном листе. Проверьте структуру файла.")
+                    st.stop()
+                    
+                # Заполняем пустые ячейки мест (объединенные ячейки в Excel)
+                df_p[c_box] = df_p[c_box].ffill()
+                
+                # Приводим типы к числовым
+                df_p[c_qty] = pd.to_numeric(df_p[c_qty], errors='coerce')
+                df_p[c_net] = pd.to_numeric(df_p[c_net], errors='coerce')
+                df_p[c_gross] = pd.to_numeric(df_p[c_gross], errors='coerce')
+                
+                # Удаляем мусорные строки
+                df_p = df_p.dropna(subset=[c_part, c_qty])
+                
+                # Запоминаем общий брутто-вес для каждой коробки (он указан в первой строчке места)
+                box_gross_weights = df_p.groupby(c_box)[c_gross].max().to_dict()
+                
+                # Группируем упаковочный лист, чтобы сложить повторяющиеся товары ВНУТРИ одного места
+                df_p_grouped = df_p.groupby([c_box, c_part, c_name], as_index=False).agg({c_qty: 'sum', c_net: 'sum'})
+
+                # 2. Собираем цены из Спецификации или Инвойса
+                price_dict = {}
+                for doc in [spec_file, invoice_file]:
+                    if doc.name.endswith(('.xlsx', '.xls', '.csv')):
+                        df_doc = parse_tabular_file(doc)
+                        c_doc_part = find_col(df_doc.columns, ['код', 'part', 'артикул'])
+                        c_doc_price = find_col(df_doc.columns, ['цена', 'price', 'тариф'])
+                        if c_doc_part and c_doc_price:
+                            df_doc[c_doc_price] = pd.to_numeric(df_doc[c_doc_price], errors='coerce')
+                            extracted_prices = df_doc.dropna(subset=[c_doc_part, c_doc_price]).set_index(c_doc_part)[c_doc_price].to_dict()
+                            price_dict.update(extracted_prices)
+
+                # 3. Основной цикл сборки данных и распределения весов брутто
+                final_rows = []
+                box_summary = {}
+                unique_boxes = df_p_grouped[c_box].unique()
+                
+                for box in unique_boxes:
+                    box_df = df_p_grouped[df_p_grouped[c_box] == box]
+                    box_gross = float(box_gross_weights.get(box, 0.0))
+                    box_net_total = float(box_df[c_net].sum())
+                    
+                    indices = box_df.index.tolist()
+                    running_gross = 0.0
+                    
+                    for idx in indices[:-1]:
+                        row = box_df.loc[idx]
+                        item_net = float(row[c_net])
+                        
+                        # Расчет пропорционального брутто
+                        calc_gross = round(item_net * (box_gross / box_net_total), 3) if box_net_total > 0 else 0.0
+                        running_gross += calc_gross
+                        
+                        part_val = str(row[c_part]).strip()
+                        qty_val = int(row[c_qty])
+                        
+                        final_rows.append({
+                            "name": str(row[c_name]),
+                            "code_num": "796",
+                            "code_str": "шт",
+                            "qty": qty_val,
+                            "price": float(price_dict.get(part_val, 0.0)),
+                            "part_no": part_val,
+                            "net_unit": round(item_net / qty_val, 3) if qty_val > 0 else 0.0,
+                            "box_num": str(box),
+                            "gross_total": calc_gross
+                        })
+                        
+                    # Последний элемент в коробке забирает хвостовой остаток
+                    if indices:
+                        last_idx = indices[-1]
+                        row = box_df.loc[last_idx]
+                        item_net = float(row[c_net])
+                        calc_gross = round(box_gross - running_gross, 3)
+                        
+                        part_val = str(row[c_part]).strip()
+                        qty_val = int(row[c_qty])
+                        
+                        final_rows.append({
+                            "name": str(row[c_name]),
+                            "code_num": "796",
+                            "code_str": "шт",
+                            "qty": qty_val,
+                            "price": float(price_dict.get(part_val, 0.0)),
+                            "part_no": part_val,
+                            "net_unit": round(item_net / qty_val, 3) if qty_val > 0 else 0.0,
+                            "box_num": str(box),
+                            "gross_total": calc_gross
+                        })
+                        
+                    # Заполняем данные для сводного дашборда
+                    box_summary[f"Место {box}"] = {
+                        "items_count": len(indices),
+                        "net_total": box_net_total,
+                        "gross_total": box_gross
+                    }
+
+                df_final_result = pd.DataFrame(final_rows)
+                
+                if df_final_result.empty:
+                    st.error("Не удалось сопоставить данные из файлов. Убедитесь, что артикулы в упаковочном листе и инвойсе совпадают.")
+                    st.stop()
+
+                # Строим итоговый стилизованный файл
+                excel_output = create_styled_excel(df_final_result, box_summary)
+                
+                st.success("🎉 Обработка завершена! Новый файл успешно сформирован на основе ваших данных.")
+                st.download_button(
+                    label="📥 Скачать Excel (Таблица + Дашборд)",
+                    data=excel_output,
+                    file_name="Tamozhnya_Zapolnitel_Pro.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+            except Exception as e:
+                st.error(f"Ошибка при обработке файлов: {e}")
+                st.info("Проверьте, что файлы не повреждены и содержат стандартные таблицы.")
