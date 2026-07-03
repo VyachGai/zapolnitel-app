@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Таможенный Сборщик Pro", layout="wide")
-st.title("📦 Профессиональный сборщик данных")
+st.set_page_config(page_title="Таможенный Сборщик", layout="wide")
+st.title("📦 Сборщик данных (Максимально надежный)")
 
 def clean_file(file, sheet, engine):
     file.seek(0)
-    # Читаем весь файл
+    # Читаем файл без заголовков
     df = pd.read_excel(file, sheet_name=sheet, header=None, engine=engine)
     
     # 1. Поиск строки с заголовками
@@ -19,58 +19,58 @@ def clean_file(file, sheet, engine):
             break
             
     if header_idx is None:
-        st.warning(f"В листе '{sheet}' не найдены заголовки с ключевыми словами: {keywords}")
+        st.error(f"Не удалось найти строку с заголовками (искали: {keywords})")
         return None
 
-    # 2. Обрезаем до заголовка
-    df = df.iloc[header_idx:].reset_index(drop=True)
-    df.columns = df.iloc[0].astype(str).str.strip().str.lower()
-    df = df.iloc[1:].reset_index(drop=True)
+    # 2. Безопасная нарезка таблицы
+    # Проверяем, есть ли вообще данные после строки с заголовком
+    if len(df) <= header_idx + 1:
+        st.warning("Заголовок найден, но под ним нет данных.")
+        return None
+
+    df_clean = df.iloc[header_idx + 1:].copy()
+    df_clean.columns = df.iloc[header_idx].astype(str).str.strip().str.lower()
+    df_clean = df_clean.reset_index(drop=True)
     
-    # 3. Очистка от мусора
-    # Удаляем строки, где название колонки артикула пустое
-    part_col = next((c for c in df.columns if any(k in c for k in ['код', 'part'])), df.columns[0])
-    df = df[df[part_col].notna()]
+    # 3. Фильтрация мусора
+    # Удаляем строки, где пустой первый столбец
+    df_clean = df_clean[df_clean.iloc[:, 0].notna()]
     
-    # Удаляем строки-подписи (Грузоотправитель и т.д.)
-    trash = ['consignee', 'shipper', 'contract', 'addr', 'упак', 'лист', 'итого']
-    for t in trash:
-        df = df[~df[part_col].astype(str).str.lower().str.contains(t, na=False)]
+    # Удаляем явно мусорные строки (по ключевым словам)
+    trash = ['consignee', 'shipper', 'contract', 'addr', 'упак', 'лист', 'итого', 'total']
+    # Проверяем только первый столбец, чтобы не удалить случайно данные
+    df_clean = df_clean[~df_clean.iloc[:, 0].astype(str).str.lower().str.contains('|'.join(trash), na=False)]
         
-    return df
+    return df_clean
 
 # --- ИНТЕРФЕЙС ---
-files_to_merge = []
-cols = st.columns(3)
-for i, name in enumerate(["Спецификация", "Инвойс", "Упаковочный"]):
-    with cols[i]:
-        up = st.file_uploader(f"Загрузить {name}", type=["xlsx", "xls"], key=name)
-        if up:
-            try:
-                engine = 'openpyxl' if up.name.endswith('.xlsx') else 'xlrd'
-                xl = pd.ExcelFile(up, engine=engine)
-                s = st.selectbox(f"Лист для {name}:", xl.sheet_names, key=f"s_{name}")
-                df = clean_file(up, s, engine)
-                if df is not None:
-                    files_to_merge.append(df)
-            except Exception as e:
-                st.error(f"Ошибка загрузки {name}: {e}")
+uploaded_files = st.file_uploader("Загрузите файлы Excel", accept_multiple_files=True, type=['xlsx', 'xls'])
+dfs = []
 
-if st.button("Сформировать таблицу"):
-    if files_to_merge:
+if uploaded_files:
+    for up in uploaded_files:
         try:
-            # Склеиваем всё в одну таблицу
-            final_df = pd.concat(files_to_merge, axis=0, ignore_index=True)
+            engine = 'openpyxl' if up.name.endswith('.xlsx') else 'xlrd'
+            xl = pd.ExcelFile(up, engine=engine)
+            sheet = st.selectbox(f"Лист для {up.name}:", xl.sheet_names, key=up.name)
             
-            # Удаляем дубликаты строк
-            final_df = final_df.drop_duplicates()
-            
-            st.success(f"Таблица собрана! Всего строк: {len(final_df)}")
-            st.dataframe(final_df)
-            
-            csv = final_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Скачать CSV", csv, "merged_result.csv", "text/csv")
+            clean_df = clean_file(up, sheet, engine)
+            if clean_df is not None:
+                dfs.append(clean_df)
+                st.write(f"✅ Файл {up.name} обработан, найдено строк: {len(clean_df)}")
         except Exception as e:
-            st.error(f"Ошибка при сборке: {e}")
-    else:
-        st.warning("Данные не загружены.")
+            st.error(f"Ошибка чтения {up.name}: {e}")
+
+if dfs and st.button("Собрать таблицу"):
+    try:
+        # Объединяем все найденные данные
+        final_df = pd.concat(dfs, axis=0, ignore_index=True)
+        final_df = final_df.drop_duplicates()
+        
+        st.success(f"Готово! Собрано строк: {len(final_df)}")
+        st.dataframe(final_df)
+        
+        csv = final_df.to_csv(index=False).encode('utf-8')
+        st.download_button("Скачать CSV", csv, "final_data.csv", "text/csv")
+    except Exception as e:
+        st.error(f"Ошибка при сборке: {e}")
