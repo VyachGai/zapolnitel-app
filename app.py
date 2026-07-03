@@ -12,6 +12,22 @@ st.set_page_config(page_title="Таможенный Заполнитель Pro",
 st.title("📦 Автоматическая подготовка данных (с выбором листов Excel)")
 st.markdown("Загрузите исходные документы. Если в файлах несколько листов, вы сможете выбрать нужный прямо в интерфейсе.")
 
+# --- Вспомогательная функция для надежного получения списка листов ---
+def get_excel_sheets(uploaded_file):
+    uploaded_file.seek(0)
+    file_name = uploaded_file.name.lower()
+    # Жестко определяем движок по расширению
+    engine_type = 'xlrd' if file_name.endswith('.xls') else 'openpyxl'
+    try:
+        xl = pd.ExcelFile(uploaded_file, engine=engine_type)
+        return xl.sheet_names
+    except ValueError:
+        # Запасной план на случай обманчивого расширения (например, .xls.xlsx)
+        uploaded_file.seek(0)
+        fallback = 'openpyxl' if engine_type == 'xlrd' else 'xlrd'
+        xl = pd.ExcelFile(uploaded_file, engine=fallback)
+        return xl.sheet_names
+
 # --- Безопасный поиск колонок ---
 def find_col(columns, keywords):
     for col in columns:
@@ -20,18 +36,26 @@ def find_col(columns, keywords):
             return col
     return None
 
-# --- Парсинг выбранного листа со смещенной шапкой ---
+# --- Парсинг выбранного листа со смещенной шапкой (С ИСПРАВЛЕНИЕМ ОШИБКИ ДВИЖКА) ---
 def parse_selected_sheet(uploaded_file, sheet_name=None):
     uploaded_file.seek(0)
-    if uploaded_file.name.endswith('.csv'):
+    file_name = uploaded_file.name.lower()
+    
+    if file_name.endswith('.csv'):
         try:
             df = pd.read_csv(uploaded_file, header=None, sep=None, engine='python')
         except:
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, header=None)
     else:
-        # Читаем конкретный лист, выбранный пользователем
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
+        # Явное указание engine спасает от ошибки "Excel file format cannot be determined"
+        engine_type = 'xlrd' if file_name.endswith('.xls') else 'openpyxl'
+        try:
+            df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None, engine=engine_type)
+        except ValueError:
+            uploaded_file.seek(0)
+            fallback = 'openpyxl' if engine_type == 'xlrd' else 'xlrd'
+            df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None, engine=fallback)
         
     header_row_idx = 0
     for idx, row in df.iterrows():
@@ -244,41 +268,40 @@ def create_styled_excel(df_data, box_summary_data):
 # --- Интерфейс приложения ---
 col1, col2, col3 = st.columns(3)
 
-# Переменные для хранения выбранных листов
 spec_sheet, invoice_sheet, pack_sheet = None, None, None
 
 with col1:
     spec_file = st.file_uploader("📋 Спецификация", type=["xlsx", "xls", "csv"])
-    if spec_file and not spec_file.name.endswith('.csv'):
-        xl = pd.ExcelFile(spec_file)
-        if len(xl.sheet_names) > 1:
-            spec_sheet = st.selectbox("Выберите лист Спецификации:", xl.sheet_names, key="spec_s")
+    if spec_file and not spec_file.name.lower().endswith('.csv'):
+        sheets = get_excel_sheets(spec_file)
+        if len(sheets) > 1:
+            spec_sheet = st.selectbox("Выберите лист Спецификации:", sheets, key="spec_s")
         else:
-            spec_sheet = xl.sheet_names[0]
+            spec_sheet = sheets[0]
 
 with col2:
     invoice_file = st.file_uploader("🧾 Инвойс", type=["xlsx", "xls", "csv"])
-    if invoice_file and not invoice_file.name.endswith('.csv'):
-        xl = pd.ExcelFile(invoice_file)
-        if len(xl.sheet_names) > 1:
-            invoice_sheet = st.selectbox("Выберите лист Инвойса:", xl.sheet_names, key="inv_s")
+    if invoice_file and not invoice_file.name.lower().endswith('.csv'):
+        sheets = get_excel_sheets(invoice_file)
+        if len(sheets) > 1:
+            invoice_sheet = st.selectbox("Выберите лист Инвойса:", sheets, key="inv_s")
         else:
-            invoice_sheet = xl.sheet_names[0]
+            invoice_sheet = sheets[0]
 
 with col3:
     pack_file = st.file_uploader("📦 Упаковочный лист", type=["xlsx", "xls", "csv"])
-    if pack_file and not pack_file.name.endswith('.csv'):
-        xl = pd.ExcelFile(pack_file)
-        if len(xl.sheet_names) > 1:
-            pack_sheet = st.selectbox("Выберите лист Упаковочного:", xl.sheet_names, key="pack_s")
+    if pack_file and not pack_file.name.lower().endswith('.csv'):
+        sheets = get_excel_sheets(pack_file)
+        if len(sheets) > 1:
+            pack_sheet = st.selectbox("Выберите лист Упаковочного:", sheets, key="pack_s")
         else:
-            pack_sheet = xl.sheet_names[0]
+            pack_sheet = sheets[0]
 
 if spec_file and invoice_file and pack_file:
     if st.button("Сформировать отчет", type="primary"):
         with st.spinner('Анализируем данные с выбранных листов...'):
             try:
-                # 1. Читаем выбранный лист Упаковочного листа
+                # 1. Читаем выбранный лист Упаковочного
                 df_p = parse_selected_sheet(pack_file, sheet_name=pack_sheet)
                 
                 c_box = find_col(df_p.columns, ['мест', 'package', 'box'])
@@ -308,7 +331,7 @@ if spec_file and invoice_file and pack_file:
                 box_gross_weights = df_p.groupby(c_box)[c_gross].max().to_dict()
                 df_p_grouped = df_p.groupby([c_box, c_part, c_name], as_index=False).agg({c_qty: 'sum', c_net: 'sum'})
 
-                # 2. Собираем цены из выбранных листов Спецификации и Инвойса
+                # 2. Собираем цены из Спецификации и Инвойса
                 price_dict = {}
                 docs_config = [(spec_file, spec_sheet), (invoice_file, invoice_sheet)]
                 
@@ -380,13 +403,13 @@ if spec_file and invoice_file and pack_file:
                 df_final_result = pd.DataFrame(final_rows)
                 
                 if df_final_result.empty:
-                    st.error("⚠️ Не удалось сопоставить данные. Проверьте правильность выбранных листов.")
+                    st.error("⚠️ Не удалось сопоставить данные. Убедитесь, что артикулы в файлах совпадают.")
                     st.stop()
 
-                # 4. Выгрузка в файл
+                # 4. Выгрузка
                 excel_output = create_styled_excel(df_final_result, box_summary)
                 
-                st.success("🎉 Успех! Файл сформирован с учетом выбранных вами листов Excel.")
+                st.success("🎉 Успех! Файл сформирован с учетом всех данных.")
                 st.download_button(
                     label="📥 Скачать готовый Excel",
                     data=excel_output,
@@ -396,3 +419,4 @@ if spec_file and invoice_file and pack_file:
                 
             except Exception as e:
                 st.error(f"Системная ошибка: {e}")
+                st.info("Пожалуйста, убедитесь, что в файле requirements.txt прописана библиотека xlrd")
