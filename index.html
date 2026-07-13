@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Таблица товаров для «Заполнителя» Альта-Софт</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="form-head">
+  <div class="form-head__stamp" aria-hidden="true">
+    <span>ДЕКЛАРАНТ</span>
+    <span class="form-head__stamp-line"></span>
+    <span>ПРИЛОЖЕНИЕ К ДТ</span>
+  </div>
+  <h1>Таблица товаров для «Заполнителя»</h1>
+  <p class="form-head__sub">Загрузите инвойс, упаковочный лист, спецификацию — приложение соберёт единую таблицу
+  из&nbsp;12 граф для импорта в «Заполнитель» (Альта-Софт). Файлы обрабатываются в браузере и никуда не отправляются.</p>
+  <ol class="graph-strip" aria-label="Графы итоговой таблицы">
+    <li><b>1</b>№ п/п</li><li><b>2</b>Файл</li>
+    <li><b>3</b>Наименование</li><li><b>4</b>Марка</li>
+    <li><b>5</b>Модель</li><li><b>6</b>Артикул</li>
+    <li><b>7</b>Изготовитель</li><li><b>8</b>Страна</li>
+    <li><b>9</b>Букв. код</li><li><b>10</b>Числ. код</li>
+    <li><b>11</b>Торг. марка</li><li><b>12</b>Ед. (цифр.)</li>
+    <li><b>13</b>Ед. (букв.)</li><li><b>14</b>Кол-во</li>
+    <li><b>15</b>Цена</li><li><b>16</b>Стоимость</li>
+    <li><b>17</b>Нетто/ед.</li><li><b>18</b>Нетто</li>
+    <li><b>19</b>Брутто</li><li><b>20</b>Место</li>
+    <li><b>21</b>Замечания</li><li><b>22</b>ТН ВЭД</li>
+    <li><b>23</b>31гр.</li><li><b>24</b>РД</li>
+    <li><b>25</b>Комм.ОТНИС</li><li><b>26</b>Вопросы</li>
+  </ol>
+</header>
+
+<main>
+  <section class="panel" id="upload-panel">
+    <div class="drop" id="drop-zone" tabindex="0" role="button" aria-label="Загрузить документы">
+      <div class="drop__icon" aria-hidden="true">⇩</div>
+      <p class="drop__title">Перетащите документы сюда или <span class="drop__link">выберите файлы</span></p>
+      <p class="drop__hint">XLSX · XLS · CSV · PDF · DOCX · TXT — можно несколько файлов сразу</p>
+      <input type="file" id="file-input" multiple
+             accept=".xlsx,.xls,.csv,.pdf,.docx,.txt"
+             hidden>
+    </div>
+    <ul class="file-list" id="file-list"></ul>
+    <div class="actions">
+      <button class="btn btn--primary" id="build-btn" disabled>Собрать таблицу</button>
+      <button class="btn" id="clear-btn" disabled>Очистить</button>
+      <label class="mode-toggle" title="Режим группировки: одинаковые товары объединяются в одну строку. Режим «построчно»: каждая строка упаковочного листа — отдельная строка таблицы; цена подтягивается из инвойса по артикулу.">
+        <span>Режим:</span>
+        <select id="mode-select">
+          <option value="merge">Группировать одинаковые</option>
+          <option value="rowbyrow">Построчно (из упаковочного листа)</option>
+        </select>
+      </label>
+    </div>
+    <p class="status" id="status" role="status"></p>
+  </section>
+
+  <section class="panel panel--result" id="result-panel" hidden>
+    <div class="result-head">
+      <h2>Итоговая таблица</h2>
+      <div class="result-head__right">
+        <span class="legend"><i class="legend__swatch"></i>замечания заполнителя (расхождения, отсутствие в файле, предупреждения)</span>
+        <span class="legend"><i class="legend__swatch legend__swatch--red"></i>математическое расхождение (расчёт ≠ значению в файле)</span>
+        <button class="btn btn--primary" id="export-btn">Скачать XLSX</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="result-table">
+        <thead>
+          <tr>
+            <th>№ п/п</th>
+            <th class="col-file">Название файла загрузки</th>
+            <th class="col-name">Наименование товара</th>
+            <th class="col-sm">Марка</th>
+            <th class="col-sm">Модель</th>
+            <th class="col-art">Код изделия / артикул</th>
+            <th class="col-sm">Изготовитель</th>
+            <th class="col-sm">Страна происхождения</th>
+            <th class="col-xs">Букв. код страны</th>
+            <th class="col-xs">Числ. код страны</th>
+            <th class="col-sm">Торговая марка</th>
+            <th class="col-xs">Код ед. изм. (цифр.)</th>
+            <th class="col-xs">Код ед. изм. (букв.)</th>
+            <th class="col-xs">Кол-во</th>
+            <th class="col-xs">Цена за ед.</th>
+            <th class="col-xs">Общая стоимость</th>
+            <th class="col-xs">Нетто за ед., кг</th>
+            <th class="col-xs">Нетто общий, кг</th>
+            <th class="col-xs">Брутто общий, кг</th>
+            <th class="col-xs">№ груз. места</th>
+            <th class="col-remark">Замечания заполнителя</th>
+            <th class="col-tnved">Код ТН ВЭД ЕАЭС</th>
+            <th class="col-manual">Описание 31гр.</th>
+            <th class="col-manual">Список РД</th>
+            <th class="col-manual">Комментарии ОТНИС</th>
+            <th class="col-manual">Вопросы ОТНИС</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+        <tfoot></tfoot>
+      </table>
+    </div>
+    <div class="notes" id="notes"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>Брутто грузового места распределяется пропорционально нетто товаров этого места, округление — 3 знака.</span>
+  <span>Повторяющиеся товары объединяются в одну строку. Незаполненные графы остаются пустыми.</span>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
