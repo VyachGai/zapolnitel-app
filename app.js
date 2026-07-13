@@ -306,8 +306,16 @@ const isJunkRow = (cells) => {
   /* Явные нетоварные маркеры в тексте строки */
   if (/(^|\s)(p\.no|dimensions?|gross\s*weight|net\s*weight|bank\s*name|beneficiary|inn\s*no|bic\s*no|account\s*no|kpp|cor\.?\s*account|buyer\s*company|seller\s*company|stamp\s*&\s*sign|authorize)($|\s)/i.test(full)) return true;
   if (/^date\s*:?$/i.test(full.trim()) || /^date\s*:?\s+date\s*:?$/i.test(full.trim())) return true;
-  /* Строка содержит габариты AxBxC (возможно с номером паллета перед ними) */
-  if (/\d+[*x×]\d+[*x×]\d+/.test(full)) return true;
+  /* Строка содержит габариты AxBxC — но это мусор ТОЛЬКО если строка
+     «голая» (номер паллета + размеры без наименования и без прочих данных),
+     как в служебных таблицах габаритов вида «P.NO | DIMENSIONS».
+     Если в строке есть полноценное наименование товара (колонка вида
+     «Габариты в см» внутри обычной товарной строки) — это НЕ мусор. */
+  if (/\d+[*x×]\d+[*x×]\d+/.test(full)) {
+    const nonEmpty = cells.filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+    const hasSubstantialText = nonEmpty.some((v) => /[A-Za-zА-Яа-яЁё]{4,}/.test(String(v)));
+    if (!hasSubstantialText && nonEmpty.length <= 4) return true;
+  }
   /* Строка — только числа и знак × (итоговая/счётная строка без наименования) */
   if (/^\d[\d\s,.*x×]*$/.test(full.trim()) && !/[A-Za-zА-Яа-яЁё]/.test(full)) return true;
   return false;
