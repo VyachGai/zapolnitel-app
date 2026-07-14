@@ -494,15 +494,23 @@ function extractFromGrid(rows, fileName) {
     const allNameCols = colMapAll["name"] || [];
     if (allNameCols.length > 1) {
       /* Ищем колонку "PRODUCT" без code/no — это артикул */
-      let productCol = -1, descCol = -1;
+      let productCol = -1, descCol = -1, itemOnlyCol = -1;
+      const descCols = [];
       for (const c of allNameCols) {
         const h = String(hRow[c] || "").trim().toLowerCase();
         if (/^product$|^продукт$/.test(h)) productCol = c;
-        else if (/description|описан/.test(h)) descCol = c;
+        else if (/description|описан/.test(h)) descCols.push(c);
+        else if (/^item$/.test(h)) itemOnlyCol = c;
       }
+      descCol = descCols.length ? descCols[0] : -1;
       if (productCol >= 0) {
         if (!("article" in colMap)) colMap["article"] = productCol;
         colMap["name"] = descCol >= 0 ? descCol : allNameCols.find((c) => c !== productCol) || allNameCols[0];
+      } else if (itemOnlyCol >= 0 && descCol >= 0) {
+        /* «Item» рядом с явной колонкой «Description»/«Описание» — это
+           порядковый номер строки, а не наименование товара. */
+        colMap["serial"] = itemOnlyCol;
+        colMap["name"] = descCol;
       }
     }
     /* "COO" (только 3 буквы) в строке заголовка → country */
@@ -1172,13 +1180,50 @@ function mergeItems(allItems) {
         const srcSet = new Set(parts.map((p) => p.source));
         if (srcSet.size === 1) orphanKeys.push(key);
       }
+      const usedByArticle = new Set();
+      /* Приоритет №1: точное совпадение артикула между сиротами из разных
+         файлов — самый надёжный признак одного и того же товара, надёжнее
+         сравнения наименований (которые могут отличаться словами, языком
+         описания или содержать OCR-искажения). */
+      {
+        const byArticle = new Map(); // normArticle → [{idx, source}]
+        orphanKeys.forEach((key, idx) => {
+          const parts = byGoods.get(key);
+          const art = normKey(parts[0].article);
+          if (!art) return;
+          if (!byArticle.has(art)) byArticle.set(art, []);
+          byArticle.get(art).push({ idx, source: parts[0].source });
+        });
+        for (const [, entries] of byArticle) {
+          /* Объединяем все сиротские записи с этим артикулом из РАЗНЫХ файлов */
+          const bySource = new Map();
+          for (const e of entries) {
+            if (!bySource.has(e.source)) bySource.set(e.source, []);
+            bySource.get(e.source).push(e.idx);
+          }
+          if (bySource.size < 2) continue; // артикул встречается только в одном файле
+          const allIdx = entries.map((e) => e.idx);
+          let mergedKey = orphanKeys[allIdx[0]];
+          let mergedParts = byGoods.get(mergedKey);
+          for (let k = 1; k < allIdx.length; k++) {
+            const key2 = orphanKeys[allIdx[k]];
+            mergedParts = [...mergedParts, ...byGoods.get(key2)];
+            byGoods.delete(key2);
+          }
+          byGoods.delete(mergedKey);
+          byGoods.set(mergedKey + "~byArticle~", mergedParts);
+          allIdx.forEach((idx) => usedByArticle.add(idx));
+        }
+      }
       const candidates = [];
       for (let i = 0; i < orphanKeys.length; i++) {
+        if (usedByArticle.has(i)) continue;
         const partsA = byGoods.get(orphanKeys[i]);
         const srcA = partsA[0].source;
         const nameA = stripNoise(normKey(partsA[0].name));
         const qtyA = partsA.reduce((s, p) => (p.qty !== null ? s + p.qty : s), 0) || null;
         for (let j = i + 1; j < orphanKeys.length; j++) {
+          if (usedByArticle.has(j)) continue;
           const partsB = byGoods.get(orphanKeys[j]);
           const srcB = partsB[0].source;
           if (srcA === srcB) continue; // сравниваем только сирот из разных файлов
