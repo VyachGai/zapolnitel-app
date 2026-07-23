@@ -272,21 +272,19 @@ tr.is-math-error td:first-child{box-shadow:inset 3px 0 0 #C0392B}
 
 .drop--chk{padding:26px 20px}
 
-.chk-knopki{display:flex;gap:10px;flex-wrap:wrap}
-
 .status.is-warn{color:var(--mark-ink);font-weight:500}
 
-/* Блок ручной загрузки перечня — появляется, когда сайт недоступен */
-.chk-perechen{
-  margin-top:16px;
-  padding:16px;
-  border:1px solid var(--line);
-  border-left:4px solid var(--stamp);
-  border-radius:4px;
-  background:var(--paper);
+.chk-knopka-zabyt{
+  margin-top:12px;
+  padding:6px 14px;
+  font-size:.8rem;
+  font-weight:500;
+  border-color:var(--line);
+  color:var(--muted);
 }
-.chk-perechen .chk-hint{margin-bottom:12px}
-.chk-perechen .drop{background:#fff}
+.chk-knopka-zabyt:hover{border-color:var(--ink);color:var(--ink)}
+
+.chk-net-dannyh{color:var(--mark-ink)}
 
 /* Шаг недоступен, пока нет перечней */
 .chk-step.is-locked{opacity:.5}
@@ -310,7 +308,7 @@ tr.is-math-error td:first-child{box-shadow:inset 3px 0 0 #C0392B}
   font-family:"IBM Plex Mono",monospace;
 }
 .chk-status b{color:var(--ink);font-family:"IBM Plex Sans",sans-serif}
-.chk-status.is-stale{border-left:3px solid var(--mark)}
+.chk-status.is-stale{border-left:3px solid var(--mark);background:#FFFDF0}
 
 /* ── Таблица результата ─────────────────────── */
 #chk-tablica table{font-size:.78rem}

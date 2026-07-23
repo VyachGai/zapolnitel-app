@@ -149,15 +149,15 @@
     <span>ПП РФ 311 · 312 · 313</span>
   </div>
   <h1>Проверка ограничений по постановлениям 311, 312, 313</h1>
-  <p class="form-head__sub">Загрузите таблицу товаров с кодами ТН ВЭД — приложение сверит каждый код
-  с перечнями постановлений Правительства РФ и вернёт исходную таблицу с добавленными графами.
-  Подойдёт и таблица, собранная в первом разделе: графа «Код ТН ВЭД ЕАЭС» распознаётся автоматически.</p>
+  <p class="form-head__sub">Загрузите тексты постановлений и таблицу товаров — приложение
+  сверит каждый код ТН ВЭД с перечнями и вернёт исходную таблицу с добавленными графами.
+  Всё обрабатывается в браузере: файлы никуда не отправляются.</p>
 
   <div class="warn-strip">
     <b>Предварительная проверка, а не замена работе с первоисточником.</b>
-    Перечни меняются часто — только за последний год правки вносили постановления
-    1374, 479, 599, 1516, 257 и 404. Перед подачей ДТ сверяйте позиции
-    с действующей редакцией.
+    Проверяется только код ТН ВЭД. Исключения по происхождению товара, направлению
+    вывоза, таможенной процедуре и статусу отправителя приложению неизвестны —
+    «нет» означает отсутствие совпадения по коду, а не отсутствие ограничений.
   </div>
 </header>
 
@@ -166,38 +166,28 @@
     <div class="chk-step">
       <span class="chk-step__num">01</span>
       <div class="chk-step__body">
-        <h2>Перечни кодов</h2>
-        <p class="chk-hint">Загружаются с alta.ru. Если сайт недоступен —
-        используется локальный снимок; если и его нет, можно загрузить
-        актуальную таблицу ограничений вручную.</p>
-        <div class="chk-knopki">
-          <button class="btn btn--primary" id="chk-obnovit" type="button">Обновить перечни с alta.ru</button>
-          <button class="btn" id="chk-ruchnoy-perechen" type="button">Загрузить таблицу ограничений</button>
-        </div>
-        <div class="chk-status" id="chk-status" hidden></div>
+        <h2>Тексты постановлений</h2>
+        <p class="chk-hint">Файлы RTF с консолидированными редакциями — можно все три сразу.
+        Номер постановления определяется из текста документа. Приложение само отбрасывает
+        отменённые позиции и старые редакции, оставляя только действующие.</p>
 
-        <div class="chk-perechen" id="chk-perechen-blok" hidden>
-          <p class="chk-hint">
-            Файл XLSX с отдельными листами <b>«Постановление 311»</b>,
-            <b>«Постановление 312»</b>, <b>«Постановление 313»</b>.
-            В каждом листе: графа&nbsp;A — код ТН ВЭД, B — наименование,
-            D — исключения. Листы, которых нет в файле, останутся непроверенными.
-          </p>
-          <div class="drop drop--chk" id="chk-perechen-drop" tabindex="0" role="button"
-               aria-label="Загрузить таблицу ограничений">
-            <div class="drop__icon" aria-hidden="true">⇩</div>
-            <p class="drop__title">Перетащите таблицу ограничений или <span class="drop__link">выберите файл</span></p>
-            <p class="drop__hint">XLSX · XLS</p>
-            <input type="file" id="chk-perechen-fajl" accept=".xlsx,.xls" hidden>
-          </div>
-          <p class="status" id="chk-perechen-soobshchenie" role="status"></p>
+        <div class="drop drop--chk" id="chk-perechni-drop" tabindex="0" role="button"
+             aria-label="Загрузить тексты постановлений">
+          <div class="drop__icon" aria-hidden="true">⇩</div>
+          <p class="drop__title">Перетащите файлы постановлений или <span class="drop__link">выберите</span></p>
+          <p class="drop__hint">RTF · можно несколько файлов сразу</p>
+          <input type="file" id="chk-perechni-fajl" accept=".rtf" multiple hidden>
         </div>
+
+        <p class="status" id="chk-perechni-soobshchenie" role="status"></p>
+        <div class="chk-status" id="chk-status" hidden></div>
+        <button class="btn chk-knopka-zabyt" id="chk-zabyt" type="button" hidden>Забыть перечни</button>
       </div>
     </div>
   </section>
 
   <section class="panel">
-    <div class="chk-step" id="chk-shag-tovary">
+    <div class="chk-step is-locked" id="chk-shag-tovary">
       <span class="chk-step__num">02</span>
       <div class="chk-step__body">
         <h2>Таблица товаров</h2>
@@ -229,8 +219,9 @@
     </div>
 
     <p class="chk-hint chk-hint--read">
-      «да» в графе исключения означает, что позиция выведена из-под ограничения —
+      «да» в графе исключения означает, что позиция выведена из-под ограничения:
       товар под постановление <b>не подпадает</b>. Итоговый вывод — в последней графе.
+      Наведите курсор на «да», чтобы увидеть, какое приложение и какая позиция сработали.
     </p>
 
     <div class="table-wrap" id="chk-tablica"></div>
@@ -238,8 +229,8 @@
 </main>
 
 <footer class="foot">
-  <span>Проверяется только код ТН ВЭД. Исключения по происхождению товара, направлению вывоза, таможенной процедуре и статусу отправителя приложению неизвестны.</span>
-  <span>«Нет» в таблице означает отсутствие совпадения по коду, а не отсутствие ограничений.</span>
+  <span>Перечни берутся только из загруженных файлов постановлений. Обращений к внешним сайтам нет.</span>
+  <span>Постановления действуют до 31 декабря 2027 года и не подлежат применению с 1 января 2028 года.</span>
 </footer>
 
 </div>

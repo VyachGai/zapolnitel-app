@@ -1,51 +1,32 @@
 /* ============================================================
    Проверка ограничений по постановлениям 311, 312, 313
-   Второй раздел приложения. От app.js не зависит.
+
+   Перечни берутся только из консолидированных RTF, которые
+   загружает пользователь. Внешних обращений нет — файлы
+   разбираются в браузере и никуда не отправляются.
    ============================================================ */
 
 (function () {
   'use strict';
 
-  /* ---------- Конфигурация ---------- */
-
-  var POSTANOVLENIYA = [
-    { id: '311', url: 'https://www.alta.ru/tamdoc/22ps0311/', name: 'ПП 311' },
-    { id: '312', url: 'https://www.alta.ru/tamdoc/22ps0312/', name: 'ПП 312' },
-    { id: '313', url: 'https://www.alta.ru/tamdoc/22ps0313/', name: 'ПП 313' }
-  ];
-
-  // Прокси пробуются по очереди, пока какой-нибудь не ответит.
-  // У alta.ru нет заголовков CORS, поэтому напрямую из браузера нельзя.
-  var PROXIES = [
-    function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); },
-    function (u) { return 'https://corsproxy.io/?' + encodeURIComponent(u); },
-    function (u) { return 'https://thingproxy.freeboard.io/fetch/' + u; }
-  ];
-
-  var SNAPSHOT_URL = 'spisok.json';
-
-  var RE_ISKLUCHENA = /Позиция\s+исключена/i;
-  var RE_PRED_RED   = /См\.\s*пред\.\s*ред\./i;
-  var RE_NOV_RED    = /Нов\.\s*ред\./i;
-  var RE_PRILOZHENIE = /Приложение\s+N\s*(\d+)/i;
+  var NOMERA = ['311', '312', '313'];
+  var HRANILISHCHE = 'zapolnitel.perechni.v1';
 
   /* ---------- Состояние ---------- */
 
   var spravochnik = null;
   var istochnik = '';
-  var istochnikSvezhiy = false;
+  var izProshlogoSeansa = false;
   var zagolovki = [];
   var rezultat = [];
 
-  /* ---------- Нормализация кодов ---------- */
+  /* ---------- Коды ---------- */
 
-  // '8501 53 810 0' -> '8501538100'
   function normKod(s) {
     if (s === null || s === undefined) return '';
     return String(s).replace(/\D/g, '');
   }
 
-  // Красивый вид: '8501538100' -> '8501 53 810 0'
   function krasivyKod(k) {
     var c = normKod(k);
     if (c.length <= 4) return c;
@@ -56,526 +37,333 @@
     return out.trim();
   }
 
-  /* ---------- Парсер страницы постановления ---------- */
+  /* ============================================================
+     Разбор RTF
+     ============================================================ */
 
-  /*
-     Разметка alta.ru перемешивает действующую и старые редакции.
-     Правило отбора:
-       - блок после «См. пред. ред.» игнорируется до следующего
-         структурного маркера;
-       - позиция с текстом «Позиция исключена» отбрасывается;
-       - всё остальное считается действующим.
-  */
+  /* Группы со служебными данными пропускаются целиком:
+     таблицы шрифтов, стили, картинки — это не текст. */
+  var MUSORNYE_GRUPPY = {
+    fonttbl: 1, colortbl: 1, stylesheet: 1, info: 1, pict: 1, object: 1,
+    themedata: 1, colorschememapping: 1, latentstyles: 1, datastore: 1,
+    listtable: 1, listoverridetable: 1, rsidtbl: 1, generator: 1,
+    xmlnstbl: 1, wgrffmtfilter: 1, panose: 1, falt: 1, filetbl: 1,
+    header: 1, footer: 1, headerl: 1, headerr: 1, headerf: 1,
+    footerl: 1, footerr: 1, footerf: 1, footnote: 1, annotation: 1,
+    bkmkstart: 1, bkmkend: 1, shppict: 1, nonshppict: 1, template: 1
+  };
 
-  function parsePostanovlenie(html, idPost) {
-    var doc = new DOMParser().parseFromString(html, 'text/html');
+  var RE_UPR_SLOVO = /^\\([a-zA-Z]+)(-?\d+)? ?/;
 
-    // Убираем заведомо лишнее
-    ['script', 'style', 'nav', 'header', 'footer'].forEach(function (t) {
-      Array.prototype.slice.call(doc.getElementsByTagName(t)).forEach(function (el) {
-        el.parentNode && el.parentNode.removeChild(el);
-      });
-    });
+  /* Таблица верхней половины cp1251 (байты 0x80–0xFF) */
+  var CP1251_VERH =
+    '\u0402\u0403\u201A\u0453\u201E\u2026\u2020\u2021\u20AC\u2030\u0409\u2039\u040A\u040C\u040B\u040F' +
+    '\u0452\u2018\u2019\u201C\u201D\u2022\u2013\u2014\u0098\u2122\u0459\u203A\u045A\u045C\u045B\u045F' +
+    '\u00A0\u040E\u045E\u0408\u00A4\u0490\u00A6\u00A7\u0401\u00A9\u0404\u00AB\u00AC\u00AD\u00AE\u0407' +
+    '\u00B0\u00B1\u0406\u0456\u0491\u00B5\u00B6\u00B7\u0451\u2116\u0454\u00BB\u0458\u0405\u0455\u0457' +
+    '\u0410\u0411\u0412\u0413\u0414\u0415\u0416\u0417\u0418\u0419\u041A\u041B\u041C\u041D\u041E\u041F' +
+    '\u0420\u0421\u0422\u0423\u0424\u0425\u0426\u0427\u0428\u0429\u042A\u042B\u042C\u042D\u042E\u042F' +
+    '\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439\u043A\u043B\u043C\u043D\u043E\u043F' +
+    '\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044A\u044B\u044C\u044D\u044E\u044F';
 
-    var prilozheniya = [];
-    var tekPril = null;
-    var vStaroyRedakcii = false;
+  function bajtCp1251(b) {
+    if (b < 0x80) return String.fromCharCode(b);
+    return CP1251_VERH.charAt(b - 0x80) || '';
+  }
 
-    // Идём по всем узлам документа в порядке появления
-    var vse = doc.querySelectorAll('p, div, table, ul, ol, h1, h2, h3, h4');
+  /* RTF -> текст. Ячейки таблицы разделяются табуляцией,
+     строки таблицы и абзацы — переводом строки. */
+  function rtfVTekst(raw) {
+    var out = [];
+    var i = 0, n = raw.length;
+    var propusk = [false];
 
-    for (var i = 0; i < vse.length; i++) {
-      var el = vse[i];
-      var txt = (el.textContent || '').trim();
-      if (!txt) continue;
+    while (i < n) {
+      var c = raw.charAt(i);
 
-      // Смена приложения
-      var mPril = txt.match(RE_PRILOZHENIE);
-      if (mPril && txt.length < 200) {
-        tekPril = { nomer: mPril[1], pozicii: [] };
-        prilozheniya.push(tekPril);
-        vStaroyRedakcii = false;
+      if (c === '\\') {
+        var sled = raw.charAt(i + 1);
+
+        if (sled === '\\' || sled === '{' || sled === '}') {
+          if (!propusk[propusk.length - 1]) out.push(sled);
+          i += 2;
+          continue;
+        }
+
+        if (sled === "'") {
+          var b = parseInt(raw.substr(i + 2, 2), 16);
+          if (!isNaN(b) && !propusk[propusk.length - 1]) out.push(bajtCp1251(b));
+          i += 4;
+          continue;
+        }
+
+        var m = RE_UPR_SLOVO.exec(raw.substr(i, 40));
+        if (m) {
+          var slovo = m[1];
+          var param = m[2];
+
+          if (MUSORNYE_GRUPPY[slovo]) {
+            propusk[propusk.length - 1] = true;
+          } else if (slovo === 'u' && param) {
+            var kod = parseInt(param, 10);
+            if (kod < 0) kod += 65536;
+            if (!propusk[propusk.length - 1]) out.push(String.fromCharCode(kod));
+            i += m[0].length;
+            if (raw.charAt(i) === '?') i += 1;
+            continue;
+          } else if (slovo === 'cell' || slovo === 'tab') {
+            if (!propusk[propusk.length - 1]) out.push('\t');
+          } else if (slovo === 'row' || slovo === 'par' || slovo === 'line' ||
+                     slovo === 'sect' || slovo === 'page') {
+            if (!propusk[propusk.length - 1]) out.push('\n');
+          }
+
+          i += m[0].length;
+          continue;
+        }
+
+        i += 1;
         continue;
       }
 
-      // Маркеры редакций
-      if (RE_PRED_RED.test(txt) && txt.length < 400) {
-        vStaroyRedakcii = true;
-        continue;
-      }
-      if (RE_NOV_RED.test(txt) && txt.length < 400) {
-        vStaroyRedakcii = false;
-        continue;
-      }
+      if (c === '{') { propusk.push(propusk[propusk.length - 1]); i += 1; continue; }
+      if (c === '}') { if (propusk.length > 1) propusk.pop(); i += 1; continue; }
+      if (c === '\r' || c === '\n') { i += 1; continue; }
 
-      if (!tekPril) continue;
-
-      /*
-         Маркер «См. пред. ред.» относится только к ближайшему следующему
-         блоку с позициями. Пропускаем ровно один блок и снимаем флаг:
-         иначе теряются действующие позиции, идущие сразу за старой
-         редакцией, и товар получает ложное «нет».
-      */
-      if (el.tagName === 'TABLE') {
-        if (vStaroyRedakcii) { vStaroyRedakcii = false; continue; }
-        razborTablicy(el, tekPril);
-      } else if (el.tagName === 'UL' || el.tagName === 'OL') {
-        if (vStaroyRedakcii) { vStaroyRedakcii = false; continue; }
-        razborSpiska(el, tekPril);
-      }
+      if (!propusk[propusk.length - 1]) out.push(c);
+      i += 1;
     }
 
-    // Приложения без позиций отбрасываем
-    prilozheniya = prilozheniya.filter(function (p) { return p.pozicii.length > 0; });
-
-    return { id: idPost, prilozheniya: prilozheniya };
+    return out.join('');
   }
 
-  function razborTablicy(table, pril) {
-    var rows = table.querySelectorAll('tr');
-    for (var i = 0; i < rows.length; i++) {
-      var cells = rows[i].querySelectorAll('td, th');
-      if (cells.length < 1) continue;
+  /* ---------- Маркеры структуры постановления ---------- */
 
-      var kodTxt = (cells[0].textContent || '').trim();
-      var naimTxt = cells.length > 1 ? (cells[1].textContent || '').trim() : '';
+  var RE_PRILOZHENIE = /^Приложение\s*(?:№\s*(\d+))?\s*$/;
+  var RE_SHAPKA = /^Код\s+ТН\s*ВЭД/i;
 
-      // Заголовок таблицы
-      if (/Код\s+ТН\s*ВЭД/i.test(kodTxt) && /Наименование/i.test(naimTxt)) continue;
-      // Отменённая позиция
-      if (RE_ISKLUCHENA.test(naimTxt) || RE_ISKLUCHENA.test(kodTxt)) continue;
-      // Служебная строка
-      if (/^\(позиция\s+введена/i.test(kodTxt)) continue;
+  var RE_STARAYA_PRIL = /^Стар[а-яё]+\s+редакц[а-яё]+\s+приложени/i;
+  var RE_NOVAYA_PRIL = /^Нов[а-яё]+\s+редакц[а-яё]+\s+приложени/i;
 
-      var poz = razborPozicii(kodTxt, naimTxt);
-      if (poz) pril.pozicii.push(poz);
-    }
+  var RE_ISKLUCHENA = /^Внимание!\s*Позиц[а-яё]*\s+исключен/i;
+
+  /* Устаревшие редакции подписываются по-разному:
+       «Старая редакция позиции:»
+       «Первоначальная редакция позиции:»
+       «Редакция позиции действовавшая с … по:… включительно:» */
+  var RE_STARAYA_POZ =
+    /^(?:Стар[а-яё]+|Первоначальн[а-яё]+)\s+редакц[а-яё]+\s+позиц[а-яё]*\s*:?\s*$|^Редакц[а-яё]+\s+позиц[а-яё]+\s+действовавш/i;
+  var RE_NOVAYA_POZ = /^Нов[а-яё]+\s+редакц[а-яё]+\s+позиц[а-яё]*(?:\s*\([^)]*\))?\s*:?\s*$/i;
+
+  var RE_VNIMANIE = /^Внимание!/i;
+  var RE_SNOSKA = /^\*/;
+  var RE_NAZVANIE_GRAFY = /^(Нов|Стар)[а-яё]+\s+название\s+графы/i;
+
+  function estKod(s) {
+    s = (s || '').trim();
+    if (!s) return false;
+    return /^\d[\d\s]*\**\s*(?:\(|$|\t)/.test(s);
   }
 
-  function razborSpiska(list, pril) {
-    var items = list.querySelectorAll('li');
-    for (var i = 0; i < items.length; i++) {
-      var txt = (items[i].textContent || '').trim();
-      if (!txt) continue;
-      if (RE_ISKLUCHENA.test(txt)) continue;
-      if (/^\(позиция\s+введена/i.test(txt)) continue;
-
-      // В списке код и наименование в одной строке.
-      // Отделяем: коды и скобка исключений идут в начале.
-      var m = txt.match(/^([\d\s]+(?:\([^)]*\)\s*)?(?:[\d\s]+)*)(.*)$/);
-      if (!m) continue;
-      var poz = razborPozicii(m[1], m[2]);
-      if (poz) pril.pozicii.push(poz);
-    }
-  }
-
-  /*
-     Разбирает текст позиции в структуру:
-       { kody: ['8501'], iskl: ['8501200009','8501522001'],
-         isklText: false, naim: '...' }
-  */
-  function razborPozicii(kodTxt, naim) {
-    if (!kodTxt) return null;
-
-    var iskl = [];
-    var isklText = false;
-
-    // Вытаскиваем скобку «(за исключением ...)»
-    var mIskl = kodTxt.match(/\(\s*за\s+исключением([\s\S]*?)\)\s*$/i);
-    if (!mIskl) mIskl = kodTxt.match(/\(\s*за\s+исключением([\s\S]*)$/i);
-
-    var osnovnaya = kodTxt;
-    if (mIskl) {
-      osnovnaya = kodTxt.slice(0, mIskl.index);
-      var isklBody = mIskl[1];
-      // Есть ли в исключениях текст без кодов
-      if (/абзац|пункт|постановлени|товаров,\s*указанных/i.test(isklBody)) {
-        isklText = true;
-      }
-      iskl = izvlechKody(isklBody);
-    }
-
-    var kody = izvlechKody(osnovnaya);
-    if (kody.length === 0) return null;
-
-    return {
-      kody: kody,
-      iskl: iskl,
-      isklText: isklText,
-      naim: (naim || '').replace(/\s+/g, ' ').trim().slice(0, 300)
-    };
-  }
-
-  /*
-     Извлекает коды ТН ВЭД из текста.
-     '8501 53 810 0, 8412 21 200 1' -> ['8501538100','8412212001']
-
-     Осторожно с мусором: в тексте исключений встречаются годы и номера
-     документов («от 9 марта 2022 г. N 312»), которые по форме неотличимы
-     от товарной группы. Отбрасываем их по контексту.
-  */
-  function izvlechKody(s) {
+  function vytashchitKody(s) {
     if (!s) return [];
-
-    var tekst = String(s);
-
-    // Вырезаем фрагменты, где числа заведомо не коды товаров:
-    // ссылки на документы, даты, номера пунктов и абзацев.
-    tekst = tekst
-      .replace(/постановлени[а-я]*\s+Правительств[а-я]*[^,;)]*/gi, ' ')
-      .replace(/от\s+\d{1,2}\s+[а-яё]+\s+\d{4}\s*г\.?/gi, ' ')
-      .replace(/\d{1,2}\.\d{1,2}\.\d{4}/g, ' ')
-      .replace(/\bN\s*\d+[\-\/]?[а-яё\d]*/gi, ' ')
-      .replace(/\b\d{4}\s*г\.?\b/gi, ' ')
-      .replace(/(пункт|абзац|стать|раздел|част)[а-я]*\s+[^,;)]*/gi, ' ')
-      .replace(/Федерального\s+закона[^,;)]*/gi, ' ')
-      .replace(/приложени[а-я]*\s+N?\s*\d+/gi, ' ');
+    var t = String(s);
+    t = t.replace(/постановлени[а-яё]*\s+Правительств[а-яё]*[^,;)]*/gi, ' ');
+    t = t.replace(/от\s+\d{1,2}\s+[а-яё]+\s+\d{4}\s*г\.?/gi, ' ');
+    t = t.replace(/\bN\s*\d+/gi, ' ');
+    t = t.replace(/№\s*\d+/g, ' ');
+    t = t.replace(/(пункт|абзац|стать)[а-яё]*\s+[^,;)]*/gi, ' ');
 
     var rez = [];
-    var chasti = tekst.split(/[,;\n]/);
-
+    var chasti = t.split(/[,;\n]/);
     for (var i = 0; i < chasti.length; i++) {
-      var ch = chasti[i];
-      // Группы цифр, разделённые пробелами, идущие подряд
-      var m = ch.match(/\d[\d\s]*\d|\d/g);
+      var m = chasti[i].match(/\d[\d\s]*\d|\d/g);
       if (!m) continue;
       for (var j = 0; j < m.length; j++) {
         var k = normKod(m[j]);
-        // Коды ТН ВЭД: 4, 6, 8, 9 или 10 знаков.
-        // Нечётные длины вроде 5 или 7 знаков в перечнях не встречаются,
-        // но допускаем их, чтобы не потерять данные при опечатке в разметке.
         if (k.length >= 4 && k.length <= 10) rez.push(k);
       }
     }
     return rez;
   }
 
-  /* ---------- Парсер таблицы перечней из XLSX ---------- */
+  /* Разбирает левую ячейку строки перечня. Скобка
+     «(за исключением …)» может не закрываться на этой строке —
+     продолжение придёт следующей. */
+  function razborKodov(s) {
+    s = (s || '').replace(/\*/g, ' ');
 
-  /*
-     Формат таблицы: отдельный лист на каждое постановление,
-     имя листа содержит номер («Постановление 311»).
-     Колонка A — код ТН ВЭД, B — наименование, D — исключения.
-
-     Исключения в такой таблице лежат отдельным списком и не привязаны
-     к конкретной строке: это общий перечень исключений постановления.
-     Поэтому храним их отдельно от позиций и проверяем против всего списка.
-  */
-
-  function parseXlsxPerechen(workbook) {
-    var rez = {};
-    var najdeno = 0;
-
-    workbook.SheetNames.forEach(function (imyaLista) {
-      // Из имени листа достаём номер постановления
-      var m = imyaLista.match(/\b(311|312|313)\b/);
-      if (!m) return;
-      var idPost = m[1];
-
-      var ws = workbook.Sheets[imyaLista];
-      var stroki = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-      if (stroki.length < 2) return;
-
-      var pozicii = [];
-      var iskluchenia = [];
-
-      for (var i = 1; i < stroki.length; i++) {
-        var str = stroki[i];
-
-        // Колонка A — код позиции
-        var kodyStroki = razobratYachejkuKodov(str[0]);
-        if (kodyStroki.length) {
-          var naim = String(str[1] === undefined ? '' : str[1])
-            .replace(/\s+/g, ' ').trim().slice(0, 300);
-          pozicii.push({
-            kody: kodyStroki,
-            iskl: [],
-            isklText: false,
-            naim: naim
-          });
-        }
-
-        // Колонка D — общий список исключений
-        var kodyIskl = razobratYachejkuKodov(str[3]);
-        for (var j = 0; j < kodyIskl.length; j++) {
-          if (iskluchenia.indexOf(kodyIskl[j]) === -1) {
-            iskluchenia.push(kodyIskl[j]);
-          }
-        }
-      }
-
-      if (pozicii.length) {
-        rez[idPost] = {
-          id: idPost,
-          obshieIskluchenia: iskluchenia,
-          prilozheniya: [{ nomer: '—', pozicii: pozicii }]
-        };
-        najdeno++;
-      }
-    });
-
-    if (najdeno === 0) {
-      throw new Error(
-        'в файле не найдено листов с названиями «Постановление 311», ' +
-        '«Постановление 312», «Постановление 313»'
-      );
-    }
-
-    /* Сводные таблицы иногда дублируют один перечень в нескольких листах.
-       Тогда товар получит «да» сразу по двум постановлениям, хотя в
-       первоисточнике позиция есть только в одном. Молча это пропускать
-       нельзя — предупреждаем. */
-    rez.__dubli = najtiDubli(rez);
-
-    // Постановления, которых не было в файле, оставляем пустыми:
-    // лучше честное «нет данных», чем молчаливое «нет ограничений»
-    POSTANOVLENIYA.forEach(function (p) {
-      if (!rez[p.id]) {
-        rez[p.id] = { id: p.id, obshieIskluchenia: [], prilozheniya: [], netDannyh: true };
-      }
-    });
-
-    return rez;
-  }
-
-  /*
-     Ищет пары постановлений, чьи перечни сильно пересекаются.
-     Возвращает список текстовых предупреждений.
-  */
-  function najtiDubli(sprav) {
-    var predupr = [];
-    var ids = ['311', '312', '313'];
-
-    function kodyPost(id) {
-      var s = sprav[id];
-      if (!s || !s.prilozheniya) return [];
-      var out = [];
-      s.prilozheniya.forEach(function (pr) {
-        pr.pozicii.forEach(function (p) {
-          p.kody.forEach(function (k) {
-            if (out.indexOf(k) === -1) out.push(k);
-          });
-        });
-      });
-      return out;
-    }
-
-    for (var i = 0; i < ids.length; i++) {
-      for (var j = i + 1; j < ids.length; j++) {
-        var a = kodyPost(ids[i]);
-        var b = kodyPost(ids[j]);
-        if (a.length < 10 || b.length < 10) continue;
-
-        var obshie = 0;
-        for (var k = 0; k < a.length; k++) {
-          if (b.indexOf(a[k]) !== -1) obshie++;
-        }
-        var dolya = obshie / Math.min(a.length, b.length);
-
-        if (dolya > 0.5) {
-          predupr.push(
-            'листы «Постановление ' + ids[i] + '» и «Постановление ' + ids[j] +
-            '» совпадают на ' + Math.round(dolya * 100) + '% (' + obshie + ' кодов). ' +
-            'Товары будут отмечены сразу по обоим постановлениям — сверьте с первоисточником.'
-          );
-        }
-      }
-    }
-    return predupr;
-  }
-
-  /*
-     Разбирает содержимое одной ячейки с кодами.
-     Учитывает особенности выгрузки:
-       - код может быть числом (300610), а не строкой;
-       - две позиции могут слипнуться через точку или запятую
-         («8424200000.84249»).
-  */
-  function razobratYachejkuKodov(znach) {
-    if (znach === null || znach === undefined) return [];
-    var s = String(znach).trim();
-    if (!s) return [];
-
-    // Заголовок таблицы
-    if (/код|тнвэд|тн\s*вэд|наименован|исключен/i.test(s)) return [];
-
-    var rez = [];
-    var chasti = s.split(/[.,;\s/]+/);
-    for (var i = 0; i < chasti.length; i++) {
-      var k = normKod(chasti[i]);
-      if (k.length >= 4 && k.length <= 10) rez.push(k);
-    }
-    return rez;
-  }
-
-  /* ---------- Загрузка ---------- */
-
-  function zagruzitCherezProxy(url) {
-    var popytki = PROXIES.map(function (p) {
-      return function () {
-        return fetch(p(url), { method: 'GET' }).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.text();
-        });
+    var m = /\(\s*за\s+исключением/i.exec(s);
+    if (m) {
+      var telo = s.slice(m.index + m[0].length);
+      return {
+        kody: vytashchitKody(s.slice(0, m.index)),
+        iskl: vytashchitKody(telo),
+        isklText: /абзац|пункт|постановлени|товаров,\s*указанных/i.test(telo)
       };
-    });
+    }
 
-    return popytki.reduce(function (chain, f) {
-      return chain.catch(f);
-    }, Promise.reject());
+    var ch = s.trim();
+    if (ch.charAt(0) === '(' || ch.charAt(ch.length - 1) === ')') {
+      return { kody: [], iskl: vytashchitKody(ch.replace(/[()]/g, '')), isklText: false };
+    }
+
+    return { kody: vytashchitKody(s), iskl: [], isklText: false };
   }
 
-  function zagruzitSpravochnik() {
-    soobshchenie('Загружаю перечни с alta.ru…');
-    pokazatBlokPerechnya(false);
+  /* Текст постановления -> приложения с позициями.
 
-    var zadachi = POSTANOVLENIYA.map(function (p) {
-      return zagruzitCherezProxy(p.url)
-        .then(function (html) { return parsePostanovlenie(html, p.id); })
-        .catch(function (e) { return { id: p.id, oshibka: String(e), prilozheniya: [] }; });
-    });
+     Ключевая тонкость: маркеры «Старая редакция» и «Позиция
+     исключена» гасят ровно одну следующую позицию, а не всё
+     до конца документа. Иначе теряются действующие позиции,
+     идущие сразу за отменённой. */
+  function razobratPostanovlenie(tekst, idPost) {
+    var lines = tekst.split('\n');
+    var prilozheniya = [];
+    var tek = null;
 
-    return Promise.all(zadachi).then(function (rezultaty) {
-      var udachno = rezultaty.filter(function (r) { return r.prilozheniya.length > 0; });
+    var vStaroyPril = false;
+    var propuskaemPril = false;
+    var sledIsklyuchena = false;
+    var vStaroyPoz = false;
+    var zhdemShapku = false;
 
-      if (udachno.length === POSTANOVLENIYA.length) {
-        spravochnik = {};
-        rezultaty.forEach(function (r) { spravochnik[r.id] = r; });
-        istochnik = 'alta.ru, загружено ' + new Date().toLocaleString('ru-RU');
-        istochnikSvezhiy = true;
-        soobshchenie('Перечни загружены с alta.ru.');
-        pokazatStatusSpravochnika();
-        otkrytZagruzkuTovarov(true);
-        return spravochnik;
+    var nakopKody = [], nakopIskl = [], nakopText = false;
+
+    function sbrosit(naim) {
+      if (tek && nakopKody.length) {
+        tek.pozicii.push({
+          kody: nakopKody.slice(),
+          iskl: nakopIskl.slice(),
+          isklText: nakopText,
+          naim: (naim || '').slice(0, 300)
+        });
+      }
+      nakopKody = []; nakopIskl = []; nakopText = false;
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var syraya = lines[i];
+      var s = syraya.replace(/[\t ]+$/, '').trim();
+      if (!s) continue;
+
+      if (RE_STARAYA_PRIL.test(s)) { sbrosit(); vStaroyPril = true; tek = null; continue; }
+      if (RE_NOVAYA_PRIL.test(s)) { vStaroyPril = false; continue; }
+
+      var mp = RE_PRILOZHENIE.exec(s);
+      if (mp) {
+        sbrosit();
+        if (vStaroyPril) {
+          vStaroyPril = false;
+          propuskaemPril = true;
+          tek = null; zhdemShapku = false;
+          continue;
+        }
+        propuskaemPril = false;
+        tek = { nomer: mp[1] || '?', pozicii: [], zagolovok: '' };
+        zhdemShapku = true;
+        continue;
       }
 
-      // alta.ru не отдал данные — пробуем локальный снимок
-      return zagruzitSnimok(rezultaty);
-    });
+      if (vStaroyPril || propuskaemPril) continue;
+
+      if (tek && s.indexOf('Перечень') === 0) {
+        tek.zagolovok = s.slice(0, 140);
+        // Перечень стран — не товарный
+        if (/иностранн[а-яё]+ государств|территори/i.test(s) && !/товар/i.test(s)) {
+          tek = null; zhdemShapku = false;
+        }
+        continue;
+      }
+
+      if (zhdemShapku && !RE_SHAPKA.test(s)) {
+        if (s.indexOf('к постановлению') === 0 || s.indexOf('См.') === 0 ||
+            RE_VNIMANIE.test(s)) continue;
+      }
+
+      if (RE_SHAPKA.test(s)) {
+        if (tek) { prilozheniya.push(tek); zhdemShapku = false; }
+        continue;
+      }
+
+      if (!tek || zhdemShapku) continue;
+
+      if (RE_NAZVANIE_GRAFY.test(s) ||
+          s === 'Наименование товара' || s === 'Наименование товара*') continue;
+
+      if (RE_ISKLUCHENA.test(s)) { sbrosit(); sledIsklyuchena = true; continue; }
+      if (RE_NOVAYA_POZ.test(s)) { sbrosit(); vStaroyPoz = false; continue; }
+      if (RE_STARAYA_POZ.test(s)) { sbrosit(); vStaroyPoz = true; continue; }
+      if (RE_VNIMANIE.test(s)) { sbrosit(); vStaroyPoz = false; continue; }
+      if (RE_SNOSKA.test(s)) continue;
+
+      var chasti = syraya.split('\t');
+      var levaya = (chasti[0] || '').trim();
+      var pravaya = chasti.length > 1 ? (chasti[1] || '').trim() : '';
+
+      if (vStaroyPoz) {
+        // Старая редакция кончается строкой с наименованием
+        if (pravaya) vStaroyPoz = false;
+        continue;
+      }
+
+      var nachalo = estKod(levaya);
+      var prodolzhenie = nakopKody.length > 0 && !nachalo && levaya;
+      if (!nachalo && !prodolzhenie) continue;
+
+      if (sledIsklyuchena) {
+        if (pravaya) sledIsklyuchena = false;
+        continue;
+      }
+
+      var r = razborKodov(levaya);
+      nakopKody = nakopKody.concat(r.kody);
+      nakopIskl = nakopIskl.concat(r.iskl);
+      nakopText = nakopText || r.isklText;
+
+      if (pravaya) sbrosit(pravaya);
+    }
+
+    sbrosit();
+    prilozheniya = prilozheniya.filter(function (p) { return p.pozicii.length > 0; });
+
+    return { id: idPost, prilozheniya: prilozheniya };
   }
 
-  function zagruzitSnimok(chastichnye) {
-    return fetch(SNAPSHOT_URL)
-      .then(function (r) {
-        if (!r.ok) throw new Error('нет файла');
-        return r.json();
-      })
-      .then(function (snim) {
-        if (!snim.dannye) throw new Error('пустой снимок');
+  /* Номер постановления берём из текста: имя файла могли изменить */
+  function opredelitNomer(tekst, imyaFajla) {
+    var nachalo = tekst.slice(0, 4000);
 
-        spravochnik = snim.dannye;
-        istochnik = 'локальный снимок от ' + (snim.data || 'неизвестной даты');
-        istochnikSvezhiy = false;
+    var m = /Постановление\s+Правительства[^\n]{0,80}?№\s*(311|312|313)\b/i.exec(nachalo);
+    if (m) return m[1];
 
-        // Если часть постановлений всё же скачалась — берём свежее
-        if (chastichnye) {
-          chastichnye.forEach(function (r) {
-            if (r.prilozheniya.length > 0) spravochnik[r.id] = r;
-          });
-        }
+    m = /к\s+постановлению\s+Правительства[^\n]{0,120}?№\s*(311|312|313)\b/i.exec(tekst);
+    if (m) return m[1];
 
-        soobshchenie(
-          'alta.ru недоступен, работаю по локальному снимку от ' +
-          (snim.data || 'неизвестной даты') +
-          '. Снимок может быть неполным — надёжнее загрузить актуальную таблицу ограничений.'
-        );
-        pokazatStatusSpravochnika();
-        pokazatBlokPerechnya(true);
-        otkrytZagruzkuTovarov(true);
-        return spravochnik;
-      })
-      .catch(function () {
-        /* Ни сайт, ни снимок недоступны.
-           Просим пользователя загрузить таблицу вручную —
-           это единственный честный выход: проверка по пустому
-           справочнику дала бы сплошные «нет». */
-        soobshchenie(
-          'Не удалось загрузить перечни с alta.ru. ' +
-          'Загрузите актуальную таблицу ограничений — файл XLSX ' +
-          'с листами «Постановление 311», «Постановление 312», «Постановление 313».',
-          'error'
-        );
-        pokazatBlokPerechnya(true);
-        otkrytZagruzkuTovarov(false);
-        throw new Error('нужна таблица ограничений');
-      });
+    m = /\b(311|312|313)\b/.exec(imyaFajla || '');
+    if (m) return m[1];
+
+    return null;
   }
 
-  /* ---------- Загрузка перечня из файла ---------- */
+  /* ============================================================
+     Проверка товаров
+     ============================================================ */
 
-  function prinyatFajlPerechnya(file) {
-    if (!file) return;
-    soobshchenieOPerechne('Читаю таблицу ограничений…');
-
-    return new Promise(function (resolve, reject) {
-      var reader = new FileReader();
-      reader.onerror = function () { reject(new Error('не удалось прочитать файл')); };
-      reader.onload = function (e) {
-        try {
-          var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-          resolve(wb);
-        } catch (err) {
-          reject(new Error('файл не читается как XLSX'));
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    })
-      .then(function (wb) {
-        spravochnik = parseXlsxPerechen(wb);
-        istochnik = 'таблица «' + file.name + '», загружена ' +
-                    new Date().toLocaleString('ru-RU');
-        istochnikSvezhiy = false;
-
-        var vsego = 0;
-        POSTANOVLENIYA.forEach(function (p) {
-          var s = spravochnik[p.id];
-          if (s && s.prilozheniya) {
-            s.prilozheniya.forEach(function (pr) { vsego += pr.pozicii.length; });
-          }
-        });
-
-        var soobsh = 'Перечни приняты: ' + vsego + ' позиций. Теперь загрузите таблицу товаров.';
-        var dubli = spravochnik.__dubli || [];
-        if (dubli.length) {
-          soobsh += ' Внимание: ' + dubli.join(' ');
-        }
-        soobshchenieOPerechne(soobsh, dubli.length ? 'warn' : '');
-        soobshchenie('');
-        pokazatStatusSpravochnika();
-        otkrytZagruzkuTovarov(true);
-        return spravochnik;
-      })
-      .catch(function (err) {
-        soobshchenieOPerechne('Ошибка: ' + err.message, 'error');
-        throw err;
-      });
-  }
-
-  /* ---------- Логика сопоставления ---------- */
-
-  /*
-     Возвращает для одного кода товара и одного постановления:
-       { podpadaet: 'да'|'нет'|'проверить',
-         iskluchenie: 'да'|'нет'|'проверить'|'',
-         detali: 'приложение N1: 8501' }
-  */
   function proverit(kodTovara, post) {
     var kt = normKod(kodTovara);
     if (!kt) return { podpadaet: '', iskluchenie: '', detali: 'код не указан' };
-    if (!post || !post.prilozheniya) return { podpadaet: 'нет', iskluchenie: 'нет', detali: '' };
-    if (post.netDannyh) {
+
+    if (!post || !post.prilozheniya || !post.prilozheniya.length) {
       return { podpadaet: 'нет данных', iskluchenie: '',
-               detali: 'в загруженном перечне нет листа по этому постановлению' };
+               detali: 'перечень этого постановления не загружен' };
     }
 
-    var sovpadeniya = [];
-    var isklSovpadeniya = [];
-    var nadoProverit = [];
-    var estTextIskl = false;
+    var sovpadeniya = [], isklSovp = [], nadoProverit = [], estText = false;
 
     for (var i = 0; i < post.prilozheniya.length; i++) {
       var pril = post.prilozheniya[i];
-      var podpis = pril.nomer === '—' ? 'перечень' : 'прил. N' + pril.nomer;
+      var podpis = 'прил. №' + pril.nomer;
 
       for (var j = 0; j < pril.pozicii.length; j++) {
         var poz = pril.pozicii[j];
@@ -584,35 +372,20 @@
           var pk = poz.kody[k];
 
           if (kt.indexOf(pk) === 0) {
-            // Код товара попадает в позицию перечня
-            sovpadeniya.push(podpis + ': ' + krasivyKod(pk));
+            var zapis = podpis + ': ' + krasivyKod(pk);
+            if (sovpadeniya.indexOf(zapis) === -1) sovpadeniya.push(zapis);
 
-            // Исключения, привязанные к самой позиции (парсинг сайта)
-            for (var m = 0; m < poz.iskl.length; m++) {
-              if (kt.indexOf(poz.iskl[m]) === 0) {
-                isklSovpadeniya.push(podpis + ': ' + krasivyKod(poz.iskl[m]));
+            for (var m2 = 0; m2 < poz.iskl.length; m2++) {
+              if (kt.indexOf(poz.iskl[m2]) === 0) {
+                var zi = krasivyKod(poz.iskl[m2]);
+                if (isklSovp.indexOf(zi) === -1) isklSovp.push(zi);
               }
             }
-            if (poz.isklText) estTextIskl = true;
+            if (poz.isklText) estText = true;
 
           } else if (pk.indexOf(kt) === 0 && kt.length < pk.length) {
-            // Обратная ситуация: код товара короче кода перечня.
-            // Автоматика решить не может.
-            nadoProverit.push(podpis + ': ' + krasivyKod(pk));
-          }
-        }
-      }
-    }
-
-    /* Общий список исключений постановления (из загруженной таблицы XLSX).
-       Он не привязан к конкретной строке, поэтому проверяется целиком. */
-    if (post.obshieIskluchenia && post.obshieIskluchenia.length) {
-      for (var n = 0; n < post.obshieIskluchenia.length; n++) {
-        var oi = post.obshieIskluchenia[n];
-        if (kt.indexOf(oi) === 0) {
-          var podpisIskl = 'исключение ' + krasivyKod(oi);
-          if (isklSovpadeniya.indexOf(podpisIskl) === -1) {
-            isklSovpadeniya.push(podpisIskl);
+            var zp = podpis + ': ' + krasivyKod(pk);
+            if (nadoProverit.indexOf(zp) === -1) nadoProverit.push(zp);
           }
         }
       }
@@ -620,21 +393,21 @@
 
     var podpadaet, iskluchenie, detali;
 
-    if (sovpadeniya.length > 0) {
+    if (sovpadeniya.length) {
       podpadaet = 'да';
       detali = sovpadeniya.slice(0, 6).join('; ');
       if (sovpadeniya.length > 6) detali += ' и ещё ' + (sovpadeniya.length - 6);
 
-      if (isklSovpadeniya.length > 0) {
+      if (isklSovp.length) {
         iskluchenie = 'да';
-        detali += ' | ' + isklSovpadeniya.join('; ');
-      } else if (estTextIskl) {
+        detali += ' | исключение: ' + isklSovp.join('; ');
+      } else if (estText) {
         iskluchenie = 'проверить';
         detali += ' | в позиции есть текстовое исключение — проверить вручную';
       } else {
         iskluchenie = 'нет';
       }
-    } else if (nadoProverit.length > 0) {
+    } else if (nadoProverit.length) {
       podpadaet = 'проверить';
       iskluchenie = '';
       detali = 'код товара короче кода перечня — ' + nadoProverit.slice(0, 4).join('; ');
@@ -647,302 +420,18 @@
     return { podpadaet: podpadaet, iskluchenie: iskluchenie, detali: detali };
   }
 
-  /* ---------- Поиск колонки с кодом ТН ВЭД ---------- */
-
-  var KLYUCHI_TNVED = [
-    'тн вэд', 'тнвэд', 'тн-вэд', 'код тн', 'тн.вэд',
-    'hs code', 'hs-code', 'hscode', 'hs код', 'tnved',
-    'товарный код', 'код тнвед', 'commodity code'
-  ];
-
-  /* Заголовки, которые похожи на код, но означают артикул.
-     Если такой встретился, графу пропускаем: перепутать артикул
-     с кодом ТН ВЭД — значит молча проверить не то. */
-  var KLYUCHI_NE_TNVED = [
-    'артикул', 'item code', 'код изделия', 'part number', 'парт номер',
-    'номер детали', 'sku', 'код позиции'
-  ];
-
-  function najtiKolonkuTnved(zagolovki) {
-    for (var i = 0; i < zagolovki.length; i++) {
-      var z = String(zagolovki[i] || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!z) continue;
-
-      // Графа артикула не подходит, даже если рядом стоит слово «код»
-      var etoArtikul = false;
-      for (var n = 0; n < KLYUCHI_NE_TNVED.length; n++) {
-        if (z.indexOf(KLYUCHI_NE_TNVED[n]) !== -1) { etoArtikul = true; break; }
-      }
-      if (etoArtikul) continue;
-
-      for (var j = 0; j < KLYUCHI_TNVED.length; j++) {
-        if (z.indexOf(KLYUCHI_TNVED[j]) !== -1) return i;
-      }
-    }
-    return -1;
-  }
-
-  /*
-     Ищет строку заголовков.
-
-     В реальных спецификациях таблица редко начинается с первой строки:
-     сверху бывает название документа, номер, дата, подпись «Список
-     товаров». Берём первую строку, где встречается заголовок с кодом
-     ТН ВЭД, — она и есть шапка таблицы.
-  */
-  function najtiStrokuZagolovkov(dannye) {
-    var predel = Math.min(dannye.length, 30);
-
-    for (var i = 0; i < predel; i++) {
-      var iKod = najtiKolonkuTnved(dannye[i]);
-      if (iKod === -1) continue;
-
-      // Под шапкой должна быть хотя бы одна строка с кодом
-      for (var j = i + 1; j < dannye.length; j++) {
-        var k = normKod(dannye[j][iKod]);
-        if (k.length >= 6) return { strokaZagolovkov: i, kolonkaKoda: iKod };
-      }
-    }
-    return null;
-  }
-
-  /*
-     Отрезает хвост после списка товаров.
-
-     Ниже таблицы обычно идут «Итого», сводные веса, количество мест,
-     подписи. Эти строки не товары, и попадание их в результат
-     засоряет таблицу.
-
-     Правило: строка считается товарной, пока в ней есть код ТН ВЭД.
-     Первая строка без кода после начала товаров обрывает список,
-     если дальше кодов больше нет.
-  */
-  var RE_ITOGO = /^\s*(итого|всего|total|подытог|subtotal|сумма)\b/i;
-
-  function otsechHvost(stroki, iKod) {
-    var poslednyaya = -1;
-
-    for (var i = 0; i < stroki.length; i++) {
-      var k = normKod(stroki[i][iKod]);
-      if (k.length >= 6) poslednyaya = i;
-    }
-
-    if (poslednyaya === -1) return [];
-
-    var tovary = stroki.slice(0, poslednyaya + 1);
-
-    /* Внутри диапазона могли остаться строки без кода —
-       промежуточные «Итого» или пустые разделители. Убираем и их. */
-    return tovary.filter(function (str) {
-      var k = normKod(str[iKod]);
-      if (k.length >= 6) return true;
-
-      // Строка без кода: оставляем, только если в ней есть хоть что-то
-      // осмысленное и это не итоговая строка
-      var tekst = str.map(function (c) { return String(c === undefined ? '' : c); })
-                     .join(' ').trim();
-      if (!tekst) return false;
-      if (RE_ITOGO.test(tekst)) return false;
-      return false;
-    });
-  }
-
-  /*
-     Угадывает колонку с кодом, когда заголовка нет.
-
-     Осторожность здесь важнее полноты: рядом с кодом ТН ВЭД почти
-     всегда стоит артикул, который тоже выглядит как длинное число.
-     Если перепутать, проверка пойдёт по артикулам и молча выдаст
-     сплошные «нет» — худший вид ошибки.
-
-     Поэтому колонку принимаем, только если она уверенно похожа на
-     ТН ВЭД и заметно обходит остальные кандидатуры.
-  */
-  function ugadatKolonkuTnved(stroki) {
-    if (!stroki.length) return { indeks: -1, prichina: 'нет строк' };
-
-    var kolvo = 0;
-    stroki.forEach(function (r) { if (r.length > kolvo) kolvo = r.length; });
-
-    var kandidaty = [];
-
-    for (var c = 0; c < kolvo; c++) {
-      var podhodyat = 0, vsego = 0, desyatiznachnyh = 0;
-
-      for (var r = 0; r < stroki.length; r++) {
-        var v = stroki[r][c];
-        if (v === null || v === undefined || String(v).trim() === '') continue;
-        vsego++;
-        var s = String(v).trim();
-        var k = normKod(s);
-
-        // Код ТН ВЭД — только цифры. Артикулы часто содержат буквы
-        // («300513672E»), это надёжный признак не-кода.
-        if (/[^\d\s.]/.test(s)) continue;
-        if (k.length >= 6 && k.length <= 10) {
-          podhodyat++;
-          if (k.length === 10) desyatiznachnyh++;
-        }
-      }
-
-      if (vsego === 0) continue;
-      var dolya = podhodyat / vsego;
-      // Полные 10-значные коды — сильный признак ТН ВЭД
-      var bonus = vsego ? (desyatiznachnyh / vsego) * 0.3 : 0;
-      kandidaty.push({ indeks: c, ball: dolya + bonus, dolya: dolya });
-    }
-
-    kandidaty.sort(function (a, b) { return b.ball - a.ball; });
-
-    if (!kandidaty.length || kandidaty[0].dolya < 0.6) {
-      return { indeks: -1, prichina: 'ни одна колонка не похожа на коды ТН ВЭД' };
-    }
-
-    // Несколько похожих колонок — угадывать опасно
-    if (kandidaty.length > 1 && (kandidaty[0].ball - kandidaty[1].ball) < 0.15) {
-      return {
-        indeks: -1,
-        prichina: 'несколько колонок похожи на коды (например, ' +
-                  'колонки №' + (kandidaty[0].indeks + 1) + ' и №' +
-                  (kandidaty[1].indeks + 1) + ') — не берусь выбирать'
-      };
-    }
-
-    return { indeks: kandidaty[0].indeks, prichina: '' };
-  }
-
-  /* ---------- Чтение файла товаров ---------- */
-
-  function prochitatFajl(file) {
-    return new Promise(function (resolve, reject) {
-      var reader = new FileReader();
-      reader.onerror = function () { reject(new Error('не удалось прочитать файл')); };
-      reader.onload = function (e) {
-        try {
-          var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-          var ws = wb.Sheets[wb.SheetNames[0]];
-          var dannye = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-
-          // Отбрасываем пустые строки
-          dannye = dannye.filter(function (r) {
-            return r.some(function (c) { return String(c).trim() !== ''; });
-          });
-
-          if (dannye.length < 2) {
-            reject(new Error('в файле меньше двух строк'));
-            return;
-          }
-          resolve(dannye);
-        } catch (err) {
-          reject(err);
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    });
-  }
-
-  /* ---------- Обработка ---------- */
-
-  function obrabotat(dannye) {
-    var iKod, poZagolovku, iShapki;
-
-    // Сначала ищем настоящую строку заголовков
-    var najdeno = najtiStrokuZagolovkov(dannye);
-
-    if (najdeno) {
-      iShapki = najdeno.strokaZagolovkov;
-      iKod = najdeno.kolonkaKoda;
-      poZagolovku = true;
-    } else {
-      // Заголовка нет — считаем шапкой первую строку и угадываем колонку
-      iShapki = 0;
-      poZagolovku = false;
-      var dogadka = ugadatKolonkuTnved(dannye.slice(1));
-      if (dogadka.indeks === -1) {
-        soobshchenie(
-          'Не нашёл колонку с кодом ТН ВЭД: ' + dogadka.prichina + '. ' +
-          'Назовите графу «Код ТН ВЭД» или «HS code» — тогда она определится точно.',
-          'error'
-        );
-        return;
-      }
-      iKod = dogadka.indeks;
-    }
-
-    zagolovki = (dannye[iShapki] || []).map(function (z) {
-      return String(z === undefined ? '' : z).trim();
-    });
-
-    var vseStroki = dannye.slice(iShapki + 1);
-    var stroki = otsechHvost(vseStroki, iKod);
-
-    if (!stroki.length) {
-      soobshchenie(
-        'В таблице не найдено строк с кодами ТН ВЭД. ' +
-        'Проверьте, что коды состоят из 6–10 цифр.',
-        'error'
-      );
-      return;
-    }
-
-    rezultat = stroki.map(function (str) {
-      var kod = str[iKod];
-      var p311 = proverit(kod, spravochnik['311']);
-      var p312 = proverit(kod, spravochnik['312']);
-      var p313 = proverit(kod, spravochnik['313']);
-
-      return {
-        ishodnaya: str,
-        kod: kod,
-        p311: p311,
-        p312: p312,
-        p313: p313,
-        itog: sformirovatItog(p311, p312, p313)
-      };
-    });
-
-    /* Сообщаем, что именно программа сочла таблицей: пользователь
-       должен видеть границы разбора, а не доверять им вслепую. */
-    var imyaGrafy = zagolovki[iKod] || ('графа №' + (iKod + 1));
-    imyaGrafy = imyaGrafy.replace(/\s+/g, ' ').slice(0, 40);
-
-    var chasti = ['Проверено товаров: ' + rezultat.length];
-    chasti.push('код ТН ВЭД взят из графы «' + imyaGrafy + '»');
-    if (iShapki > 0) {
-      chasti.push('шапка таблицы найдена в строке ' + (iShapki + 1));
-    }
-    var otbrosheno = vseStroki.length - stroki.length;
-    if (otbrosheno > 0) {
-      chasti.push('строк без кода отброшено: ' + otbrosheno);
-    }
-    if (!poZagolovku) {
-      chasti.push('графа определена по содержимому — проверьте');
-    }
-
-    soobshchenie(chasti.join('; ') + '.');
-    pokazatTablicu();
-  }
-
-  /*
-     Итоговая колонка. Смысл:
-       подпадает = попал в перечень И не попал в исключение
-  */
   function sformirovatItog(p311, p312, p313) {
-    // Код не указан — проверка не проводилась. Молчаливое
-    // «ограничений не найдено» здесь было бы обманом.
     if (p311.podpadaet === '' && p312.podpadaet === '' && p313.podpadaet === '') {
       return 'код ТН ВЭД не указан — проверка не проводилась';
     }
 
     var pary = [['311', p311], ['312', p312], ['313', p313]];
-    var podpadaet = [];
-    var proverit_ = [];
-    var netDannyh = [];
+    var podpadaet = [], proverit_ = [], netDannyh = [];
 
     pary.forEach(function (par) {
       var nomer = par[0], p = par[1];
       if (p.podpadaet === 'да') {
-        if (p.iskluchenie === 'да') return;            // исключён — не подпадает
+        if (p.iskluchenie === 'да') return;
         if (p.iskluchenie === 'проверить') proverit_.push(nomer);
         else podpadaet.push(nomer);
       } else if (p.podpadaet === 'проверить') {
@@ -961,32 +450,372 @@
     return chasti.join('; ');
   }
 
-  /* ---------- Отрисовка ---------- */
+  /* ============================================================
+     Таблица товаров
+     ============================================================ */
+
+  var KLYUCHI_TNVED = [
+    'тн вэд', 'тнвэд', 'тн-вэд', 'код тн', 'тн.вэд',
+    'hs code', 'hs-code', 'hscode', 'hs код', 'tnved',
+    'товарный код', 'код тнвед', 'commodity code'
+  ];
+
+  /* Заголовки, похожие на код, но означающие артикул.
+     Перепутать артикул с кодом ТН ВЭД — значит молча
+     проверить не то и выдать сплошные «нет». */
+  var KLYUCHI_NE_TNVED = [
+    'артикул', 'item code', 'код изделия', 'part number', 'парт номер',
+    'номер детали', 'sku', 'код позиции'
+  ];
+
+  function najtiKolonkuTnved(zag) {
+    for (var i = 0; i < zag.length; i++) {
+      var z = String(zag[i] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!z) continue;
+
+      var artikul = false;
+      for (var n = 0; n < KLYUCHI_NE_TNVED.length; n++) {
+        if (z.indexOf(KLYUCHI_NE_TNVED[n]) !== -1) { artikul = true; break; }
+      }
+      if (artikul) continue;
+
+      for (var j = 0; j < KLYUCHI_TNVED.length; j++) {
+        if (z.indexOf(KLYUCHI_TNVED[j]) !== -1) return i;
+      }
+    }
+    return -1;
+  }
+
+  /* Ищет строку заголовков: в спецификациях таблица редко
+     начинается с первой строки. */
+  function najtiStrokuZagolovkov(dannye) {
+    var predel = Math.min(dannye.length, 30);
+    for (var i = 0; i < predel; i++) {
+      var iKod = najtiKolonkuTnved(dannye[i]);
+      if (iKod === -1) continue;
+      for (var j = i + 1; j < dannye.length; j++) {
+        if (normKod(dannye[j][iKod]).length >= 6) {
+          return { strokaZagolovkov: i, kolonkaKoda: iKod };
+        }
+      }
+    }
+    return null;
+  }
+
+  /* Отрезает хвост после списка товаров: «Итого», сводные
+     веса, количество мест — это не товары. */
+  function otsechHvost(stroki, iKod) {
+    var poslednyaya = -1;
+    for (var i = 0; i < stroki.length; i++) {
+      if (normKod(stroki[i][iKod]).length >= 6) poslednyaya = i;
+    }
+    if (poslednyaya === -1) return [];
+
+    return stroki.slice(0, poslednyaya + 1).filter(function (str) {
+      return normKod(str[iKod]).length >= 6;
+    });
+  }
+
+  function ugadatKolonkuTnved(stroki) {
+    if (!stroki.length) return { indeks: -1, prichina: 'нет строк' };
+
+    var kolvo = 0;
+    stroki.forEach(function (r) { if (r.length > kolvo) kolvo = r.length; });
+
+    var kandidaty = [];
+    for (var c = 0; c < kolvo; c++) {
+      var podhodyat = 0, vsego = 0, desyati = 0;
+      for (var r = 0; r < stroki.length; r++) {
+        var v = stroki[r][c];
+        if (v === null || v === undefined || String(v).trim() === '') continue;
+        vsego++;
+        var s = String(v).trim();
+        if (/[^\d\s.]/.test(s)) continue;   // буквы — признак артикула
+        var k = normKod(s);
+        if (k.length >= 6 && k.length <= 10) {
+          podhodyat++;
+          if (k.length === 10) desyati++;
+        }
+      }
+      if (!vsego) continue;
+      var dolya = podhodyat / vsego;
+      kandidaty.push({ indeks: c, ball: dolya + (desyati / vsego) * 0.3, dolya: dolya });
+    }
+
+    kandidaty.sort(function (a, b) { return b.ball - a.ball; });
+
+    if (!kandidaty.length || kandidaty[0].dolya < 0.6) {
+      return { indeks: -1, prichina: 'ни одна графа не похожа на коды ТН ВЭД' };
+    }
+    if (kandidaty.length > 1 && (kandidaty[0].ball - kandidaty[1].ball) < 0.15) {
+      return { indeks: -1,
+               prichina: 'несколько граф похожи на коды (№' + (kandidaty[0].indeks + 1) +
+                         ' и №' + (kandidaty[1].indeks + 1) + ') — не берусь выбирать' };
+    }
+    return { indeks: kandidaty[0].indeks, prichina: '' };
+  }
+
+  function prochitatTablicu(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('не удалось прочитать файл')); };
+      reader.onload = function (e) {
+        try {
+          var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+          var ws = wb.Sheets[wb.SheetNames[0]];
+          var dannye = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+          dannye = dannye.filter(function (r) {
+            return r.some(function (c) { return String(c).trim() !== ''; });
+          });
+          if (dannye.length < 2) { reject(new Error('в файле меньше двух строк')); return; }
+          resolve(dannye);
+        } catch (err) {
+          reject(new Error('файл не читается как таблица'));
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function obrabotat(dannye) {
+    var iKod, poZagolovku, iShapki;
+    var najdeno = najtiStrokuZagolovkov(dannye);
+
+    if (najdeno) {
+      iShapki = najdeno.strokaZagolovkov;
+      iKod = najdeno.kolonkaKoda;
+      poZagolovku = true;
+    } else {
+      iShapki = 0;
+      poZagolovku = false;
+      var dogadka = ugadatKolonkuTnved(dannye.slice(1));
+      if (dogadka.indeks === -1) {
+        soobshchenie('Не нашёл графу с кодом ТН ВЭД: ' + dogadka.prichina +
+                     '. Назовите её «Код ТН ВЭД» или «HS code».', 'error');
+        return;
+      }
+      iKod = dogadka.indeks;
+    }
+
+    zagolovki = (dannye[iShapki] || []).map(function (z) {
+      return String(z === undefined ? '' : z).replace(/\s+/g, ' ').trim();
+    });
+
+    var vseStroki = dannye.slice(iShapki + 1);
+    var stroki = otsechHvost(vseStroki, iKod);
+
+    if (!stroki.length) {
+      soobshchenie('В таблице не найдено строк с кодами ТН ВЭД.', 'error');
+      return;
+    }
+
+    rezultat = stroki.map(function (str) {
+      var kod = str[iKod];
+      var p311 = proverit(kod, spravochnik['311']);
+      var p312 = proverit(kod, spravochnik['312']);
+      var p313 = proverit(kod, spravochnik['313']);
+      return {
+        ishodnaya: str, kod: kod,
+        p311: p311, p312: p312, p313: p313,
+        itog: sformirovatItog(p311, p312, p313)
+      };
+    });
+
+    var imya = (zagolovki[iKod] || ('графа №' + (iKod + 1))).slice(0, 40);
+    var chasti = ['Проверено товаров: ' + rezultat.length];
+    chasti.push('код взят из графы «' + imya + '»');
+    if (iShapki > 0) chasti.push('шапка найдена в строке ' + (iShapki + 1));
+    var otbr = vseStroki.length - stroki.length;
+    if (otbr > 0) chasti.push('строк без кода отброшено: ' + otbr);
+    if (!poZagolovku) chasti.push('графа определена по содержимому — проверьте');
+
+    soobshchenie(chasti.join('; ') + '.');
+    pokazatTablicu();
+  }
+
+  /* ============================================================
+     Загрузка перечней
+     ============================================================ */
+
+  function prinyatFajlyPostanovlenij(files) {
+    if (!files || !files.length) return Promise.resolve();
+
+    soobshchenieOPerechnyah('Читаю ' + files.length +
+      (files.length === 1 ? ' файл…' : ' файла…'));
+
+    var zadachi = Array.prototype.slice.call(files).map(prochitatOdinRtf);
+
+    return Promise.all(zadachi).then(function (rezultaty) {
+      if (!spravochnik) spravochnik = {};
+      var prinyato = [], oshibki = [];
+
+      rezultaty.forEach(function (r) {
+        if (r.oshibka) { oshibki.push(r.imya + ' — ' + r.oshibka); return; }
+        spravochnik[r.nomer] = r.dannye;
+        spravochnik[r.nomer].imyaFajla = r.imya;
+        prinyato.push(r);
+      });
+
+      if (!prinyato.length) {
+        soobshchenieOPerechnyah('Не удалось разобрать: ' + oshibki.join('; '), 'error');
+        return;
+      }
+
+      istochnik = 'файлы постановлений, загружены ' + new Date().toLocaleString('ru-RU');
+      izProshlogoSeansa = false;
+      sohranitVHranilishche();
+
+      var chasti = prinyato.map(function (r) {
+        var n = 0;
+        r.dannye.prilozheniya.forEach(function (p) { n += p.pozicii.length; });
+        return 'ПП ' + r.nomer + ' — ' + n + ' позиц.';
+      });
+      var soobsh = 'Принято: ' + chasti.join(', ') + '.';
+      if (oshibki.length) soobsh += ' Не разобрано: ' + oshibki.join('; ') + '.';
+
+      var netu = NOMERA.filter(function (n) {
+        return !spravochnik[n] || !spravochnik[n].prilozheniya ||
+               !spravochnik[n].prilozheniya.length;
+      });
+      if (netu.length) {
+        soobsh += ' Не загружены: ПП ' + netu.join(', ') +
+                  ' — по ним проверка не проводится.';
+      }
+
+      soobshchenieOPerechnyah(soobsh, netu.length ? 'warn' : '');
+      pokazatStatus();
+      otkrytShagTovarov(true);
+    });
+  }
+
+  function prochitatOdinRtf(file) {
+    return new Promise(function (resolve) {
+      var reader = new FileReader();
+      reader.onerror = function () {
+        resolve({ imya: file.name, oshibka: 'файл не читается' });
+      };
+      reader.onload = function (e) {
+        try {
+          // RTF однобайтовый, последовательности \'XX раскрываем сами
+          var bytes = new Uint8Array(e.target.result);
+          var syroy = '';
+          var CHUNK = 32768;
+          for (var i = 0; i < bytes.length; i += CHUNK) {
+            syroy += String.fromCharCode.apply(
+              null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+          }
+
+          if (syroy.slice(0, 5) !== '{\\rtf') {
+            resolve({ imya: file.name, oshibka: 'это не файл RTF' });
+            return;
+          }
+
+          var tekst = rtfVTekst(syroy);
+          var nomer = opredelitNomer(tekst, file.name);
+          if (!nomer) {
+            resolve({ imya: file.name,
+                      oshibka: 'не удалось определить номер постановления' });
+            return;
+          }
+
+          var dannye = razobratPostanovlenie(tekst, nomer);
+          if (!dannye.prilozheniya.length) {
+            resolve({ imya: file.name,
+                      oshibka: 'не найдено перечней с кодами ТН ВЭД' });
+            return;
+          }
+
+          resolve({ imya: file.name, nomer: nomer, dannye: dannye });
+        } catch (err) {
+          resolve({ imya: file.name, oshibka: 'ошибка разбора: ' + err.message });
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  /* ---------- Сохранение между сеансами ---------- */
+
+  function sohranitVHranilishche() {
+    try {
+      localStorage.setItem(HRANILISHCHE, JSON.stringify({
+        data: new Date().toISOString(),
+        istochnik: istochnik,
+        spravochnik: spravochnik
+      }));
+    } catch (e) {
+      // Переполнение хранилища или запрет — не критично
+    }
+  }
+
+  function zagruzitIzHranilishcha() {
+    try {
+      var syroe = localStorage.getItem(HRANILISHCHE);
+      if (!syroe) return false;
+      var o = JSON.parse(syroe);
+      if (!o || !o.spravochnik) return false;
+
+      spravochnik = o.spravochnik;
+      istochnik = o.istochnik || 'предыдущий сеанс';
+      izProshlogoSeansa = true;
+
+      var d = o.data ? new Date(o.data) : null;
+      var kogda = d ? d.toLocaleString('ru-RU') : 'неизвестно когда';
+
+      soobshchenieOPerechnyah(
+        'Данные из предыдущего запуска (загружены ' + kogda + '). ' +
+        'Постановления могли измениться — если не уверены, загрузите файлы заново.',
+        'warn'
+      );
+      pokazatStatus();
+      otkrytShagTovarov(true);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function zabytPerechni() {
+    try { localStorage.removeItem(HRANILISHCHE); } catch (e) {}
+    spravochnik = null;
+    istochnik = '';
+    izProshlogoSeansa = false;
+    rezultat = [];
+
+    var panel = document.getElementById('chk-result-panel');
+    if (panel) panel.hidden = true;
+    var st = document.getElementById('chk-status');
+    if (st) st.hidden = true;
+    var kn = document.getElementById('chk-zabyt');
+    if (kn) kn.hidden = true;
+
+    soobshchenieOPerechnyah('Перечни удалены. Загрузите файлы постановлений.');
+    soobshchenie('');
+    otkrytShagTovarov(false);
+  }
+
+  /* ============================================================
+     Отрисовка
+     ============================================================ */
 
   var NOVYE_KOLONKI = [
-    { zag: 'ПП 311',        klass: 'col-chk' },
-    { zag: 'Искл. из 311',  klass: 'col-chk' },
-    { zag: 'ПП 312',        klass: 'col-chk' },
-    { zag: 'Искл. из 312',  klass: 'col-chk' },
-    { zag: 'ПП 313',        klass: 'col-chk' },
-    { zag: 'Искл. из 313',  klass: 'col-chk' },
+    { zag: 'ПП 311', klass: 'col-chk' }, { zag: 'Искл. из 311', klass: 'col-chk' },
+    { zag: 'ПП 312', klass: 'col-chk' }, { zag: 'Искл. из 312', klass: 'col-chk' },
+    { zag: 'ПП 313', klass: 'col-chk' }, { zag: 'Искл. из 313', klass: 'col-chk' },
     { zag: 'Итог проверки', klass: 'col-itog' }
   ];
 
-  function klassYachejki(znach) {
-    if (znach === 'да') return 'chk-da';
-    if (znach === 'нет') return 'chk-net';
-    if (znach === 'проверить') return 'chk-prov';
-    if (znach === 'нет данных') return 'chk-prov';
+  function klassYachejki(z) {
+    if (z === 'да') return 'chk-da';
+    if (z === 'нет') return 'chk-net';
+    if (z === 'проверить' || z === 'нет данных') return 'chk-prov';
     return 'chk-pusto';
   }
 
-  function klassItoga(itog) {
-    if (itog.indexOf('проверить') !== -1 || itog.indexOf('не указан') !== -1 ||
-        itog.indexOf('нет перечня') !== -1) {
-      return 'chk-prov';
-    }
-    if (itog.indexOf('подпадает') !== -1) return 'chk-da';
+  function klassItoga(it) {
+    if (it.indexOf('проверить') !== -1 || it.indexOf('не указан') !== -1 ||
+        it.indexOf('нет перечня') !== -1) return 'chk-prov';
+    if (it.indexOf('подпадает') !== -1) return 'chk-da';
     return '';
   }
 
@@ -996,9 +825,7 @@
     if (!host) return;
 
     var html = '<table><thead><tr>';
-    zagolovki.forEach(function (z) {
-      html += '<th>' + ekran(z) + '</th>';
-    });
+    zagolovki.forEach(function (z) { html += '<th>' + ekran(z) + '</th>'; });
     NOVYE_KOLONKI.forEach(function (k) {
       html += '<th class="' + k.klass + '">' + ekran(k.zag) + '</th>';
     });
@@ -1017,8 +844,7 @@
         html += '<td class="' + klassYachejki(p.iskluchenie) + '">' +
                 ekran(p.iskluchenie || '—') + '</td>';
       });
-      html += '<td class="cell-itog ' + klassItoga(r.itog) + '">' +
-              ekran(r.itog) + '</td>';
+      html += '<td class="cell-itog ' + klassItoga(r.itog) + '">' + ekran(r.itog) + '</td>';
       html += '</tr>';
     });
 
@@ -1033,31 +859,26 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  /* ---------- Выгрузка в XLSX ---------- */
+  /* ---------- Выгрузка ---------- */
 
   function vygruzit() {
     if (!rezultat.length) return;
 
     var wb = new ExcelJS.Workbook();
-    wb.creator = 'Таблица товаров для Заполнителя';
     var ws = wb.addWorksheet('Проверка 311-312-313');
 
-    var vseZagolovki = zagolovki.concat(NOVYE_KOLONKI.map(function (k) { return k.zag; }));
-    ws.addRow(vseZagolovki);
+    var vse = zagolovki.concat(NOVYE_KOLONKI.map(function (k) { return k.zag; }));
+    ws.addRow(vse);
 
     var hdr = ws.getRow(1);
     hdr.font = { bold: true, size: 10 };
     hdr.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     hdr.height = 30;
     hdr.eachCell(function (cell, n) {
-      cell.border = {
-        top: { style: 'thin' }, left: { style: 'thin' },
-        bottom: { style: 'thin' }, right: { style: 'thin' }
-      };
-      cell.fill = {
-        type: 'pattern', pattern: 'solid',
-        fgColor: { argb: n > zagolovki.length ? 'FFE6E4F6' : 'FFF2F4F1' }
-      };
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' },
+                      bottom: { style: 'thin' }, right: { style: 'thin' } };
+      cell.fill = { type: 'pattern', pattern: 'solid',
+        fgColor: { argb: n > zagolovki.length ? 'FFE6E4F6' : 'FFF2F4F1' } };
     });
 
     rezultat.forEach(function (r) {
@@ -1072,8 +893,8 @@
 
       var row = ws.addRow(stroka);
       row.alignment = { vertical: 'top' };
-
       var baza = zagolovki.length;
+
       [r.p311, r.p312, r.p313].forEach(function (p, idx) {
         var cPod = row.getCell(baza + idx * 2 + 1);
         var cIsk = row.getCell(baza + idx * 2 + 2);
@@ -1081,9 +902,7 @@
         zalit(cIsk, p.iskluchenie);
         cPod.alignment = { horizontal: 'center' };
         cIsk.alignment = { horizontal: 'center' };
-        if (p.detali) {
-          cPod.note = { texts: [{ text: p.detali }] };
-        }
+        if (p.detali) cPod.note = { texts: [{ text: p.detali }] };
       });
 
       var cItog = row.getCell(baza + 7);
@@ -1099,14 +918,23 @@
     ws.columns.forEach(function (col, i) {
       col.width = i < zagolovki.length ? 20 : 13;
     });
-    ws.getColumn(vseZagolovki.length).width = 38;
+    ws.getColumn(vse.length).width = 38;
     ws.views = [{ state: 'frozen', ySplit: 1 }];
 
-    /* Лист с источником данных: без него неясно,
-       по какой редакции перечней сделана проверка */
     var info = wb.addWorksheet('Источник данных');
     info.addRow(['Источник перечней', istochnik]);
     info.addRow(['Дата проверки', new Date().toLocaleString('ru-RU')]);
+    NOMERA.forEach(function (n) {
+      var s = spravochnik && spravochnik[n];
+      if (s && s.prilozheniya && s.prilozheniya.length) {
+        var kolvo = 0;
+        s.prilozheniya.forEach(function (p) { kolvo += p.pozicii.length; });
+        info.addRow(['ПП ' + n, (s.imyaFajla || '') + ' — ' + kolvo + ' позиций в ' +
+                     s.prilozheniya.length + ' прил.']);
+      } else {
+        info.addRow(['ПП ' + n, 'НЕ ЗАГРУЖЕН — проверка не проводилась']);
+      }
+    });
     info.addRow([]);
     info.addRow(['ВНИМАНИЕ']);
     info.addRow(['Предварительная проверка, а не замена работе с первоисточником.']);
@@ -1119,18 +947,18 @@
     info.addRow([]);
     info.addRow(['Как читать']);
     info.addRow(['ПП = да, Искл. = нет', 'товар подпадает под ограничение']);
-    info.addRow(['ПП = да, Искл. = да', 'позиция выведена из-под ограничения, товар НЕ подпадает']);
+    info.addRow(['ПП = да, Искл. = да', 'позиция выведена из-под ограничения, НЕ подпадает']);
     info.addRow(['ПП = нет', 'совпадений в перечне не найдено']);
+    info.addRow(['ПП = нет данных', 'перечень не загружен, проверка не проводилась']);
     info.addRow(['проверить', 'автоматика решить не может, нужен ручной разбор']);
     info.getColumn(1).width = 30;
     info.getColumn(2).width = 62;
-    info.getRow(4).font = { bold: true };
-    info.getRow(13).font = { bold: true };
+    info.getRow(6).font = { bold: true };
+    info.getRow(15).font = { bold: true };
 
     wb.xlsx.writeBuffer().then(function (buf) {
       var blob = new Blob([buf], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      });
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = 'proverka_311_312_313.xlsx';
@@ -1143,41 +971,61 @@
     });
   }
 
-  function zalit(cell, znach) {
-    if (znach === 'да') {
+  function zalit(cell, z) {
+    if (z === 'да') {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE0E0' } };
       cell.font = { bold: true };
-    } else if (znach === 'проверить') {
+    } else if (z === 'проверить' || z === 'нет данных') {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE45C' } };
       cell.font = { bold: true };
     }
   }
 
-  /* ---------- Сообщения и статус ---------- */
+  /* ---------- Сообщения ---------- */
 
   function soobshchenie(tekst, tip) {
     var el = document.getElementById('chk-soobshchenie');
     if (!el) return;
     el.textContent = tekst;
-    el.className = 'status' + (tip === 'error' ? ' is-error' : '');
+    el.className = 'status' + (tip === 'error' ? ' is-error' :
+                               (tip === 'warn' ? ' is-warn' : ''));
   }
 
-  function soobshchenieOPerechne(tekst, tip) {
-    var el = document.getElementById('chk-perechen-soobshchenie');
+  function soobshchenieOPerechnyah(tekst, tip) {
+    var el = document.getElementById('chk-perechni-soobshchenie');
     if (!el) return;
     el.textContent = tekst;
-    el.className = 'status' +
-      (tip === 'error' ? ' is-error' : (tip === 'warn' ? ' is-warn' : ''));
+    el.className = 'status' + (tip === 'error' ? ' is-error' :
+                               (tip === 'warn' ? ' is-warn' : ''));
   }
 
-  // Блок ручной загрузки перечня показываем только когда он нужен
-  function pokazatBlokPerechnya(nuzhen) {
-    var blok = document.getElementById('chk-perechen-blok');
-    if (blok) blok.hidden = !nuzhen;
+  function pokazatStatus() {
+    var el = document.getElementById('chk-status');
+    if (!el || !spravochnik) return;
+
+    var stroki = NOMERA.map(function (n) {
+      var s = spravochnik[n];
+      if (!s || !s.prilozheniya || !s.prilozheniya.length) {
+        return '<span class="chk-net-dannyh">ПП ' + n + ' — не загружено</span>';
+      }
+      var kolvo = 0;
+      s.prilozheniya.forEach(function (p) { kolvo += p.pozicii.length; });
+      var nomera = s.prilozheniya.map(function (p) { return '№' + p.nomer; }).join(', ');
+      return 'ПП ' + n + ' — ' + kolvo + ' позиц. (прил. ' + nomera + ')';
+    });
+
+    el.innerHTML = (izProshlogoSeansa
+        ? '<b>Данные из предыдущего запуска.</b><br>'
+        : '<b>Источник:</b> ' + ekran(istochnik) + '<br>') +
+      stroki.join('<br>');
+    el.hidden = false;
+    el.classList.toggle('is-stale', izProshlogoSeansa);
+
+    var knopka = document.getElementById('chk-zabyt');
+    if (knopka) knopka.hidden = false;
   }
 
-  // Шаг с таблицей товаров недоступен, пока нет перечней
-  function otkrytZagruzkuTovarov(dostupno) {
+  function otkrytShagTovarov(dostupno) {
     var shag = document.getElementById('chk-shag-tovary');
     if (!shag) return;
     shag.classList.toggle('is-locked', !dostupno);
@@ -1188,30 +1036,9 @@
     }
   }
 
-  function pokazatStatusSpravochnika() {
-    var el = document.getElementById('chk-status');
-    if (!el || !spravochnik) return;
-
-    var chasti = [];
-    POSTANOVLENIYA.forEach(function (p) {
-      var s = spravochnik[p.id];
-      var kolvo = 0, pril = 0;
-      if (s && s.prilozheniya) {
-        pril = s.prilozheniya.length;
-        s.prilozheniya.forEach(function (pr) { kolvo += pr.pozicii.length; });
-      }
-      chasti.push(p.name + ' — ' + kolvo + ' позиц. / ' + pril + ' прил.');
-    });
-
-    el.innerHTML = '<b>Источник:</b> ' + ekran(istochnik) + '<br>' + chasti.join(' · ');
-    el.hidden = false;
-    el.classList.toggle('is-stale', !istochnikSvezhiy);
-  }
-
   /* ---------- Инициализация ---------- */
 
-  /* Общая обвязка drop-зоны: клик, клавиатура, перетаскивание */
-  function podklyuchitZonu(zona, vhod, obrabotchik) {
+  function podklyuchitZonu(zona, vhod, obrabotchik, mnogo) {
     if (!zona || !vhod) return;
 
     zona.addEventListener('click', function () {
@@ -1236,77 +1063,53 @@
     });
     zona.addEventListener('drop', function (e) {
       if (zona.getAttribute('aria-disabled') === 'true') return;
-      var f = e.dataTransfer && e.dataTransfer.files[0];
-      obrabotchik(f);
+      var f = e.dataTransfer && e.dataTransfer.files;
+      if (f && f.length) obrabotchik(mnogo ? f : f[0]);
     });
     vhod.addEventListener('change', function (e) {
-      obrabotchik(e.target.files[0]);
+      if (e.target.files.length) {
+        obrabotchik(mnogo ? e.target.files : e.target.files[0]);
+      }
       e.target.value = '';
     });
   }
 
   function init() {
-    var vhod = document.getElementById('chk-fajl');
-    var zona = document.getElementById('chk-drop');
-    var vhodPerechnya = document.getElementById('chk-perechen-fajl');
-    var zonaPerechnya = document.getElementById('chk-perechen-drop');
-    var knopkaObnovit = document.getElementById('chk-obnovit');
-    var knopkaSkachat = document.getElementById('chk-skachat');
-    var knopkaRuchnoy = document.getElementById('chk-ruchnoy-perechen');
+    var vhodTovary = document.getElementById('chk-fajl');
+    if (!vhodTovary) return;
 
-    if (!vhod) return;
+    podklyuchitZonu(
+      document.getElementById('chk-perechni-drop'),
+      document.getElementById('chk-perechni-fajl'),
+      function (files) { prinyatFajlyPostanovlenij(files).catch(function () {}); },
+      true
+    );
 
-    function pustitVRabotu(file) {
-      if (!file) return;
-
-      if (!spravochnik) {
-        soobshchenie(
-          'Сначала нужны перечни кодов. Нажмите «Обновить перечни с alta.ru» ' +
-          'или загрузите таблицу ограничений.',
-          'error'
-        );
-        pokazatBlokPerechnya(true);
-        return;
-      }
-
-      soobshchenie('Читаю файл…');
-      prochitatFajl(file)
-        .then(obrabotat)
-        .catch(function (err) {
+    podklyuchitZonu(
+      document.getElementById('chk-drop'),
+      vhodTovary,
+      function (file) {
+        if (!spravochnik) {
+          soobshchenie('Сначала загрузите файлы постановлений.', 'error');
+          return;
+        }
+        soobshchenie('Читаю таблицу…');
+        prochitatTablicu(file).then(obrabotat).catch(function (err) {
           soobshchenie('Ошибка: ' + err.message, 'error');
         });
+      },
+      false
+    );
+
+    var knSkachat = document.getElementById('chk-skachat');
+    if (knSkachat) knSkachat.addEventListener('click', vygruzit);
+
+    var knZabyt = document.getElementById('chk-zabyt');
+    if (knZabyt) knZabyt.addEventListener('click', zabytPerechni);
+
+    if (!zagruzitIzHranilishcha()) {
+      otkrytShagTovarov(false);
     }
-
-    podklyuchitZonu(zona, vhod, pustitVRabotu);
-    podklyuchitZonu(zonaPerechnya, vhodPerechnya, function (f) {
-      prinyatFajlPerechnya(f).catch(function () {});
-    });
-
-    if (knopkaObnovit) {
-      knopkaObnovit.addEventListener('click', function () {
-        spravochnik = null;
-        knopkaObnovit.disabled = true;
-        zagruzitSpravochnik()
-          .catch(function () {})
-          .then(function () { knopkaObnovit.disabled = false; });
-      });
-    }
-
-    // Ручная загрузка перечня доступна и без сбоя сети
-    if (knopkaRuchnoy) {
-      knopkaRuchnoy.addEventListener('click', function () {
-        pokazatBlokPerechnya(true);
-        var b = document.getElementById('chk-perechen-blok');
-        if (b) b.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
-    }
-
-    if (knopkaSkachat) {
-      knopkaSkachat.addEventListener('click', vygruzit);
-    }
-
-    // До получения перечней шаг с товарами закрыт
-    otkrytZagruzkuTovarov(false);
   }
 
   if (document.readyState === 'loading') {
@@ -1315,13 +1118,14 @@
     init();
   }
 
-  // Точки входа для отладки и для скрипта сборки снимка
   window.ProverkaOgranicheniy = {
-    parsePostanovlenie: parsePostanovlenie,
+    rtfVTekst: rtfVTekst,
+    razobratPostanovlenie: razobratPostanovlenie,
+    opredelitNomer: opredelitNomer,
     proverit: proverit,
     normKod: normKod,
-    izvlechKody: izvlechKody,
-    razborPozicii: razborPozicii,
+    najtiStrokuZagolovkov: najtiStrokuZagolovkov,
+    otsechHvost: otsechHvost,
     poluchitSpravochnik: function () { return spravochnik; }
   };
 
