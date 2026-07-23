@@ -650,13 +650,31 @@
   /* ---------- Поиск колонки с кодом ТН ВЭД ---------- */
 
   var KLYUCHI_TNVED = [
-    'тн вэд', 'тнвэд', 'тн-вэд', 'код тн', 'hs code', 'hs-code', 'hscode',
-    'код товара', 'товарный код', 'tnved'
+    'тн вэд', 'тнвэд', 'тн-вэд', 'код тн', 'тн.вэд',
+    'hs code', 'hs-code', 'hscode', 'hs код', 'tnved',
+    'товарный код', 'код тнвед', 'commodity code'
+  ];
+
+  /* Заголовки, которые похожи на код, но означают артикул.
+     Если такой встретился, графу пропускаем: перепутать артикул
+     с кодом ТН ВЭД — значит молча проверить не то. */
+  var KLYUCHI_NE_TNVED = [
+    'артикул', 'item code', 'код изделия', 'part number', 'парт номер',
+    'номер детали', 'sku', 'код позиции'
   ];
 
   function najtiKolonkuTnved(zagolovki) {
     for (var i = 0; i < zagolovki.length; i++) {
       var z = String(zagolovki[i] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!z) continue;
+
+      // Графа артикула не подходит, даже если рядом стоит слово «код»
+      var etoArtikul = false;
+      for (var n = 0; n < KLYUCHI_NE_TNVED.length; n++) {
+        if (z.indexOf(KLYUCHI_NE_TNVED[n]) !== -1) { etoArtikul = true; break; }
+      }
+      if (etoArtikul) continue;
+
       for (var j = 0; j < KLYUCHI_TNVED.length; j++) {
         if (z.indexOf(KLYUCHI_TNVED[j]) !== -1) return i;
       }
@@ -664,29 +682,133 @@
     return -1;
   }
 
-  // Если заголовка нет — ищем колонку, где большинство значений похоже на код
-  function ugadatKolonkuTnved(stroki) {
-    if (!stroki.length) return -1;
-    var kolvo = stroki[0].length;
-    var luchshaya = -1, luchshiyBall = 0;
+  /*
+     Ищет строку заголовков.
 
-    for (var c = 0; c < kolvo; c++) {
-      var podhodyat = 0, vsego = 0;
-      for (var r = 0; r < stroki.length; r++) {
-        var v = stroki[r][c];
-        if (v === null || v === undefined || v === '') continue;
-        vsego++;
-        var k = normKod(v);
-        if (k.length >= 6 && k.length <= 10) podhodyat++;
-      }
-      if (vsego === 0) continue;
-      var ball = podhodyat / vsego;
-      if (ball > luchshiyBall && ball > 0.6) {
-        luchshiyBall = ball;
-        luchshaya = c;
+     В реальных спецификациях таблица редко начинается с первой строки:
+     сверху бывает название документа, номер, дата, подпись «Список
+     товаров». Берём первую строку, где встречается заголовок с кодом
+     ТН ВЭД, — она и есть шапка таблицы.
+  */
+  function najtiStrokuZagolovkov(dannye) {
+    var predel = Math.min(dannye.length, 30);
+
+    for (var i = 0; i < predel; i++) {
+      var iKod = najtiKolonkuTnved(dannye[i]);
+      if (iKod === -1) continue;
+
+      // Под шапкой должна быть хотя бы одна строка с кодом
+      for (var j = i + 1; j < dannye.length; j++) {
+        var k = normKod(dannye[j][iKod]);
+        if (k.length >= 6) return { strokaZagolovkov: i, kolonkaKoda: iKod };
       }
     }
-    return luchshaya;
+    return null;
+  }
+
+  /*
+     Отрезает хвост после списка товаров.
+
+     Ниже таблицы обычно идут «Итого», сводные веса, количество мест,
+     подписи. Эти строки не товары, и попадание их в результат
+     засоряет таблицу.
+
+     Правило: строка считается товарной, пока в ней есть код ТН ВЭД.
+     Первая строка без кода после начала товаров обрывает список,
+     если дальше кодов больше нет.
+  */
+  var RE_ITOGO = /^\s*(итого|всего|total|подытог|subtotal|сумма)\b/i;
+
+  function otsechHvost(stroki, iKod) {
+    var poslednyaya = -1;
+
+    for (var i = 0; i < stroki.length; i++) {
+      var k = normKod(stroki[i][iKod]);
+      if (k.length >= 6) poslednyaya = i;
+    }
+
+    if (poslednyaya === -1) return [];
+
+    var tovary = stroki.slice(0, poslednyaya + 1);
+
+    /* Внутри диапазона могли остаться строки без кода —
+       промежуточные «Итого» или пустые разделители. Убираем и их. */
+    return tovary.filter(function (str) {
+      var k = normKod(str[iKod]);
+      if (k.length >= 6) return true;
+
+      // Строка без кода: оставляем, только если в ней есть хоть что-то
+      // осмысленное и это не итоговая строка
+      var tekst = str.map(function (c) { return String(c === undefined ? '' : c); })
+                     .join(' ').trim();
+      if (!tekst) return false;
+      if (RE_ITOGO.test(tekst)) return false;
+      return false;
+    });
+  }
+
+  /*
+     Угадывает колонку с кодом, когда заголовка нет.
+
+     Осторожность здесь важнее полноты: рядом с кодом ТН ВЭД почти
+     всегда стоит артикул, который тоже выглядит как длинное число.
+     Если перепутать, проверка пойдёт по артикулам и молча выдаст
+     сплошные «нет» — худший вид ошибки.
+
+     Поэтому колонку принимаем, только если она уверенно похожа на
+     ТН ВЭД и заметно обходит остальные кандидатуры.
+  */
+  function ugadatKolonkuTnved(stroki) {
+    if (!stroki.length) return { indeks: -1, prichina: 'нет строк' };
+
+    var kolvo = 0;
+    stroki.forEach(function (r) { if (r.length > kolvo) kolvo = r.length; });
+
+    var kandidaty = [];
+
+    for (var c = 0; c < kolvo; c++) {
+      var podhodyat = 0, vsego = 0, desyatiznachnyh = 0;
+
+      for (var r = 0; r < stroki.length; r++) {
+        var v = stroki[r][c];
+        if (v === null || v === undefined || String(v).trim() === '') continue;
+        vsego++;
+        var s = String(v).trim();
+        var k = normKod(s);
+
+        // Код ТН ВЭД — только цифры. Артикулы часто содержат буквы
+        // («300513672E»), это надёжный признак не-кода.
+        if (/[^\d\s.]/.test(s)) continue;
+        if (k.length >= 6 && k.length <= 10) {
+          podhodyat++;
+          if (k.length === 10) desyatiznachnyh++;
+        }
+      }
+
+      if (vsego === 0) continue;
+      var dolya = podhodyat / vsego;
+      // Полные 10-значные коды — сильный признак ТН ВЭД
+      var bonus = vsego ? (desyatiznachnyh / vsego) * 0.3 : 0;
+      kandidaty.push({ indeks: c, ball: dolya + bonus, dolya: dolya });
+    }
+
+    kandidaty.sort(function (a, b) { return b.ball - a.ball; });
+
+    if (!kandidaty.length || kandidaty[0].dolya < 0.6) {
+      return { indeks: -1, prichina: 'ни одна колонка не похожа на коды ТН ВЭД' };
+    }
+
+    // Несколько похожих колонок — угадывать опасно
+    if (kandidaty.length > 1 && (kandidaty[0].ball - kandidaty[1].ball) < 0.15) {
+      return {
+        indeks: -1,
+        prichina: 'несколько колонок похожи на коды (например, ' +
+                  'колонки №' + (kandidaty[0].indeks + 1) + ' и №' +
+                  (kandidaty[1].indeks + 1) + ') — не берусь выбирать'
+      };
+    }
+
+    return { indeks: kandidaty[0].indeks, prichina: '' };
   }
 
   /* ---------- Чтение файла товаров ---------- */
@@ -722,22 +844,45 @@
   /* ---------- Обработка ---------- */
 
   function obrabotat(dannye) {
-    zagolovki = dannye[0].map(function (z) { return String(z).trim(); });
-    var stroki = dannye.slice(1);
+    var iKod, poZagolovku, iShapki;
 
-    var iKod = najtiKolonkuTnved(zagolovki);
-    var poZagolovku = iKod !== -1;
+    // Сначала ищем настоящую строку заголовков
+    var najdeno = najtiStrokuZagolovkov(dannye);
 
-    if (iKod === -1) {
-      iKod = ugadatKolonkuTnved(stroki);
-      if (iKod === -1) {
+    if (najdeno) {
+      iShapki = najdeno.strokaZagolovkov;
+      iKod = najdeno.kolonkaKoda;
+      poZagolovku = true;
+    } else {
+      // Заголовка нет — считаем шапкой первую строку и угадываем колонку
+      iShapki = 0;
+      poZagolovku = false;
+      var dogadka = ugadatKolonkuTnved(dannye.slice(1));
+      if (dogadka.indeks === -1) {
         soobshchenie(
-          'Не нашёл колонку с кодом ТН ВЭД. Назовите её «Код ТН ВЭД» ' +
-          'или проверьте, что коды состоят из 6–10 цифр.',
+          'Не нашёл колонку с кодом ТН ВЭД: ' + dogadka.prichina + '. ' +
+          'Назовите графу «Код ТН ВЭД» или «HS code» — тогда она определится точно.',
           'error'
         );
         return;
       }
+      iKod = dogadka.indeks;
+    }
+
+    zagolovki = (dannye[iShapki] || []).map(function (z) {
+      return String(z === undefined ? '' : z).trim();
+    });
+
+    var vseStroki = dannye.slice(iShapki + 1);
+    var stroki = otsechHvost(vseStroki, iKod);
+
+    if (!stroki.length) {
+      soobshchenie(
+        'В таблице не найдено строк с кодами ТН ВЭД. ' +
+        'Проверьте, что коды состоят из 6–10 цифр.',
+        'error'
+      );
+      return;
     }
 
     rezultat = stroki.map(function (str) {
@@ -756,11 +901,25 @@
       };
     });
 
-    var soobsh = 'Проверено строк: ' + rezultat.length + '. ' +
-      'Колонка с кодом ТН ВЭД: «' + (zagolovki[iKod] || ('№' + (iKod + 1))) + '»' +
-      (poZagolovku ? '' : ' (определена по содержимому — проверьте)') + '.';
-    soobshchenie(soobsh);
+    /* Сообщаем, что именно программа сочла таблицей: пользователь
+       должен видеть границы разбора, а не доверять им вслепую. */
+    var imyaGrafy = zagolovki[iKod] || ('графа №' + (iKod + 1));
+    imyaGrafy = imyaGrafy.replace(/\s+/g, ' ').slice(0, 40);
 
+    var chasti = ['Проверено товаров: ' + rezultat.length];
+    chasti.push('код ТН ВЭД взят из графы «' + imyaGrafy + '»');
+    if (iShapki > 0) {
+      chasti.push('шапка таблицы найдена в строке ' + (iShapki + 1));
+    }
+    var otbrosheno = vseStroki.length - stroki.length;
+    if (otbrosheno > 0) {
+      chasti.push('строк без кода отброшено: ' + otbrosheno);
+    }
+    if (!poZagolovku) {
+      chasti.push('графа определена по содержимому — проверьте');
+    }
+
+    soobshchenie(chasti.join('; ') + '.');
     pokazatTablicu();
   }
 
