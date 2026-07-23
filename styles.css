@@ -272,6 +272,33 @@ tr.is-math-error td:first-child{box-shadow:inset 3px 0 0 #C0392B}
 
 .drop--chk{padding:26px 20px}
 
+.chk-knopki{display:flex;gap:10px;flex-wrap:wrap}
+
+.status.is-warn{color:var(--mark-ink);font-weight:500}
+
+/* Блок ручной загрузки перечня — появляется, когда сайт недоступен */
+.chk-perechen{
+  margin-top:16px;
+  padding:16px;
+  border:1px solid var(--line);
+  border-left:4px solid var(--stamp);
+  border-radius:4px;
+  background:var(--paper);
+}
+.chk-perechen .chk-hint{margin-bottom:12px}
+.chk-perechen .drop{background:#fff}
+
+/* Шаг недоступен, пока нет перечней */
+.chk-step.is-locked{opacity:.5}
+.chk-step.is-locked .drop{
+  border-style:solid;border-color:var(--line);
+  background:var(--paper);cursor:not-allowed;
+}
+.chk-step.is-locked .drop:hover{background:var(--paper);border-color:var(--line)}
+.chk-step.is-locked .drop__icon,
+.chk-step.is-locked .drop__link{color:var(--muted)}
+.chk-step.is-locked .drop__link{text-decoration:none}
+
 .chk-status{
   margin-top:14px;
   border:1px solid var(--line);

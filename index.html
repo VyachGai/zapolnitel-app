@@ -167,16 +167,37 @@
       <span class="chk-step__num">01</span>
       <div class="chk-step__body">
         <h2>Перечни кодов</h2>
-        <p class="chk-hint">Загружаются с alta.ru при первой проверке. Если сайт недоступен —
-        используется локальный снимок из репозитория.</p>
-        <button class="btn" id="chk-obnovit" type="button">Обновить перечни с alta.ru</button>
+        <p class="chk-hint">Загружаются с alta.ru. Если сайт недоступен —
+        используется локальный снимок; если и его нет, можно загрузить
+        актуальную таблицу ограничений вручную.</p>
+        <div class="chk-knopki">
+          <button class="btn btn--primary" id="chk-obnovit" type="button">Обновить перечни с alta.ru</button>
+          <button class="btn" id="chk-ruchnoy-perechen" type="button">Загрузить таблицу ограничений</button>
+        </div>
         <div class="chk-status" id="chk-status" hidden></div>
+
+        <div class="chk-perechen" id="chk-perechen-blok" hidden>
+          <p class="chk-hint">
+            Файл XLSX с отдельными листами <b>«Постановление 311»</b>,
+            <b>«Постановление 312»</b>, <b>«Постановление 313»</b>.
+            В каждом листе: графа&nbsp;A — код ТН ВЭД, B — наименование,
+            D — исключения. Листы, которых нет в файле, останутся непроверенными.
+          </p>
+          <div class="drop drop--chk" id="chk-perechen-drop" tabindex="0" role="button"
+               aria-label="Загрузить таблицу ограничений">
+            <div class="drop__icon" aria-hidden="true">⇩</div>
+            <p class="drop__title">Перетащите таблицу ограничений или <span class="drop__link">выберите файл</span></p>
+            <p class="drop__hint">XLSX · XLS</p>
+            <input type="file" id="chk-perechen-fajl" accept=".xlsx,.xls" hidden>
+          </div>
+          <p class="status" id="chk-perechen-soobshchenie" role="status"></p>
+        </div>
       </div>
     </div>
   </section>
 
   <section class="panel">
-    <div class="chk-step">
+    <div class="chk-step" id="chk-shag-tovary">
       <span class="chk-step__num">02</span>
       <div class="chk-step__body">
         <h2>Таблица товаров</h2>
@@ -185,7 +206,7 @@
         если названия нет — определяется по содержимому.</p>
 
         <div class="drop drop--chk" id="chk-drop" tabindex="0" role="button"
-             aria-label="Загрузить таблицу товаров">
+             aria-label="Загрузить таблицу товаров" aria-disabled="true">
           <div class="drop__icon" aria-hidden="true">⇩</div>
           <p class="drop__title">Перетащите таблицу сюда или <span class="drop__link">выберите файл</span></p>
           <p class="drop__hint">XLSX · XLS · CSV</p>
