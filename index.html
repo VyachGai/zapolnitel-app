@@ -11,6 +11,23 @@
 </head>
 <body>
 
+<nav class="tabs" role="tablist" aria-label="Разделы приложения">
+  <button class="tab" id="tab-btn-tablica" role="tab"
+          aria-selected="true" aria-controls="tab-tablica" data-tab="tab-tablica">
+    <span class="tab__num">01</span>
+    Таблица товаров
+  </button>
+  <button class="tab" id="tab-btn-proverka" role="tab"
+          aria-selected="false" aria-controls="tab-proverka" data-tab="tab-proverka">
+    <span class="tab__num">02</span>
+    Проверка ограничений 311 · 312 · 313
+  </button>
+</nav>
+
+<!-- ══════════ БЛОК 1: сборка таблицы товаров ══════════ -->
+<div class="tab-panel is-active" id="tab-tablica" role="tabpanel"
+     aria-labelledby="tab-btn-tablica">
+
 <header class="form-head">
   <div class="form-head__stamp" aria-hidden="true">
     <span>ДЕКЛАРАНТ</span>
@@ -117,10 +134,103 @@
   <span>Повторяющиеся товары объединяются в одну строку. Незаполненные графы остаются пустыми.</span>
 </footer>
 
+</div>
+<!-- ══════════ КОНЕЦ БЛОКА 1 ══════════ -->
+
+
+<!-- ══════════ БЛОК 2: проверка ограничений ══════════ -->
+<div class="tab-panel" id="tab-proverka" role="tabpanel"
+     aria-labelledby="tab-btn-proverka" hidden>
+
+<header class="form-head">
+  <div class="form-head__stamp form-head__stamp--alt" aria-hidden="true">
+    <span>ЗАПРЕТЫ И ОГРАНИЧЕНИЯ</span>
+    <span class="form-head__stamp-line"></span>
+    <span>ПП РФ 311 · 312 · 313</span>
+  </div>
+  <h1>Проверка ограничений по постановлениям 311, 312, 313</h1>
+  <p class="form-head__sub">Загрузите таблицу товаров с кодами ТН ВЭД — приложение сверит каждый код
+  с перечнями постановлений Правительства РФ и вернёт исходную таблицу с добавленными графами.
+  Подойдёт и таблица, собранная в первом разделе: графа «Код ТН ВЭД ЕАЭС» распознаётся автоматически.</p>
+
+  <div class="warn-strip">
+    <b>Предварительная проверка, а не замена работе с первоисточником.</b>
+    Перечни меняются часто — только за последний год правки вносили постановления
+    1374, 479, 599, 1516, 257 и 404. Перед подачей ДТ сверяйте позиции
+    с действующей редакцией.
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="chk-step">
+      <span class="chk-step__num">01</span>
+      <div class="chk-step__body">
+        <h2>Перечни кодов</h2>
+        <p class="chk-hint">Загружаются с alta.ru при первой проверке. Если сайт недоступен —
+        используется локальный снимок из репозитория.</p>
+        <button class="btn" id="chk-obnovit" type="button">Обновить перечни с alta.ru</button>
+        <div class="chk-status" id="chk-status" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="chk-step">
+      <span class="chk-step__num">02</span>
+      <div class="chk-step__body">
+        <h2>Таблица товаров</h2>
+        <p class="chk-hint">XLSX · XLS · CSV. Первая строка — заголовки.
+        Графа с кодом ищется по названию («Код ТН ВЭД», «ТН ВЭД», «HS code»);
+        если названия нет — определяется по содержимому.</p>
+
+        <div class="drop drop--chk" id="chk-drop" tabindex="0" role="button"
+             aria-label="Загрузить таблицу товаров">
+          <div class="drop__icon" aria-hidden="true">⇩</div>
+          <p class="drop__title">Перетащите таблицу сюда или <span class="drop__link">выберите файл</span></p>
+          <p class="drop__hint">XLSX · XLS · CSV</p>
+          <input type="file" id="chk-fajl" accept=".xlsx,.xls,.csv" hidden>
+        </div>
+
+        <p class="status" id="chk-soobshchenie" role="status"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel panel--result" id="chk-result-panel" hidden>
+    <div class="result-head">
+      <h2>Результат проверки</h2>
+      <div class="result-head__right">
+        <span class="legend"><i class="legend__swatch legend__swatch--red"></i>подпадает под ограничение</span>
+        <span class="legend"><i class="legend__swatch"></i>требует ручной проверки</span>
+        <button class="btn btn--primary" id="chk-skachat" type="button">Скачать XLSX</button>
+      </div>
+    </div>
+
+    <p class="chk-hint chk-hint--read">
+      «да» в графе исключения означает, что позиция выведена из-под ограничения —
+      товар под постановление <b>не подпадает</b>. Итоговый вывод — в последней графе.
+    </p>
+
+    <div class="table-wrap" id="chk-tablica"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>Проверяется только код ТН ВЭД. Исключения по происхождению товара, направлению вывоза, таможенной процедуре и статусу отправителя приложению неизвестны.</span>
+  <span>«Нет» в таблице означает отсутствие совпадения по коду, а не отсутствие ограничений.</span>
+</footer>
+
+</div>
+<!-- ══════════ КОНЕЦ БЛОКА 2 ══════════ -->
+
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <script src="app.js"></script>
+<script src="checker.js"></script>
+<script src="tabs.js"></script>
 </body>
 </html>
